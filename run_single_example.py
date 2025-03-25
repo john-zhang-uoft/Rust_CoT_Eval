@@ -55,7 +55,7 @@ if __name__ == "__main__":
     
     sample = samples[args.sample_idx]
     print(f"Selected sample {args.sample_idx}: {sample['task_id']}")
-    print(f"Instruction: {sample['instruction'][:100]}...")
+    print(f"Instruction: {sample['instruction']}...")
     
     # Create the models
     gen_model = create_model(

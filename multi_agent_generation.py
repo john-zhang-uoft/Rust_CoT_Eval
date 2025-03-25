@@ -85,30 +85,23 @@ class CodeReviewerAgent:
         self.model = model
         self.language = language
         
-        # Set up temporary directories for testing
-        self.temp_dir = tempfile.mkdtemp(prefix="code_reviewer_")
+        # Get absolute path to project root (where this script is located)
+        self.project_root = os.path.dirname(os.path.abspath(__file__))
         
+        # Set up paths for Rust project
         if language == "rust":
-            # Create a minimal Rust project structure
-            self.setup_rust_project()
-    
-    def setup_rust_project(self):
-        """Create a minimal Rust project for testing"""
-        self.rust_dir = os.path.join(self.temp_dir, "rust_project")
-        self.rust_src = os.path.join(self.rust_dir, "src")
-        
-        os.makedirs(self.rust_src, exist_ok=True)
-        
-        # Create Cargo.toml
-        with open(os.path.join(self.rust_dir, "Cargo.toml"), "w") as f:
-            f.write("""
-[package]
-name = "code_review"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-""")
+            self.rust_dir = os.path.join(self.project_root, "rust")
+            self.rust_src = os.path.join(self.rust_dir, "src")
+            self.rust_bin = os.path.join(self.rust_src, "bin")
+            
+            # Create src/bin directory if it doesn't exist
+            os.makedirs(self.rust_bin, exist_ok=True)
+            
+            # Check if Cargo.toml exists
+            if not os.path.exists(os.path.join(self.rust_dir, "Cargo.toml")):
+                raise FileNotFoundError(f"Cargo.toml not found in {self.rust_dir}")
+                
+            print(f"Using Rust project at: {self.rust_dir}")
     
     def review(self, declaration: str, implementation: str, entry_point: str) -> Tuple[bool, str, Dict[str, Any]]:
         """
@@ -127,7 +120,7 @@ edition = "2021"
         details = {}
         
         # Step 1: Check if the code compiles
-        compiles, compile_feedback, compile_details = self.check_compilation(declaration, implementation)
+        compiles, compile_feedback, compile_details = self.check_compilation(declaration, implementation, entry_point)
         details["compilation"] = compile_details
         
         if not compiles:
@@ -141,7 +134,7 @@ edition = "2021"
             return False, f"Could not generate tests: {test_code}", details
         
         # Step 3: Run the tests
-        tests_pass, test_output, test_details = self.run_tests(declaration, implementation, test_code)
+        tests_pass, test_output, test_details = self.run_tests(declaration, implementation, test_code, entry_point)
         details["test_execution"] = test_details
         
         if not tests_pass:
@@ -154,19 +147,23 @@ edition = "2021"
         
         return True, "Code looks good. All tests passed.", details
     
-    def check_compilation(self, declaration: str, implementation: str) -> Tuple[bool, str, Dict[str, Any]]:
+    def check_compilation(self, declaration: str, implementation: str, entry_point: str) -> Tuple[bool, str, Dict[str, Any]]:
         """Check if the code compiles"""
         start_time = time.time()
-        combined_code = declaration + "\n" + implementation
         
-        # Write to a temporary file
-        src_file = os.path.join(self.rust_src, "lib.rs")
-        with open(src_file, "w") as f:
+        # Create a unique file name based on the entry point
+        file_prefix = entry_point.lower().replace("/", "_")
+        file_name = f"{file_prefix}.rs"
+        file_path = os.path.join(self.rust_bin, file_name)
+        
+        # Combine the code and write to a file
+        combined_code = "fn main(){}\n" + declaration + "\n" + implementation
+        with open(file_path, "w") as f:
             f.write(combined_code)
         
         # Try to compile
         process = subprocess.run(
-            ["cargo", "check"],
+            ["cargo", "check", "--bin", file_prefix],
             cwd=self.rust_dir,
             capture_output=True,
             text=True
@@ -175,10 +172,11 @@ edition = "2021"
         # Collect details
         details = {
             "duration": time.time() - start_time,
-            "command": "cargo check",
+            "command": f"cargo check --bin {file_prefix}",
             "return_code": process.returncode,
             "stdout": process.stdout,
-            "stderr": process.stderr
+            "stderr": process.stderr,
+            "file_path": file_path
         }
         
         if process.returncode != 0:
@@ -199,7 +197,7 @@ Compilation error:
 {error_output}
 ```
 
-Provide a brief explanation of what's wrong and how to fix it. Be specific about the issue.
+Provide a brief explanation of what's wrong and how to fix it. Focus on issues in the implementation, not in the Cargo.toml or other project configuration.
 """
             start_time = time.time()
             error_analysis = self.model.generate_code(error_prompt, n=1)[0]
@@ -230,7 +228,7 @@ Create multiple test cases that thoroughly test the function, including:
 3. Boundary conditions
 
 Format your response as a Rust test module wrapped with #[cfg(test)] that can be directly appended to the code.
-Only write the tests, not the implementation code.
+Only write the tests, not the implementation code. Make sure the tests will run with 'cargo test'.
 """
         raw_test_code = self.model.generate_code(test_prompt, n=1)[0]
         
@@ -257,19 +255,23 @@ Only write the tests, not the implementation code.
         details["test_module"] = test_module
         return True, test_module, details
     
-    def run_tests(self, declaration: str, implementation: str, tests: str) -> Tuple[bool, str, Dict[str, Any]]:
+    def run_tests(self, declaration: str, implementation: str, tests: str, entry_point: str) -> Tuple[bool, str, Dict[str, Any]]:
         """Run the tests and check if they pass"""
         start_time = time.time()
-        combined_code = declaration + "\n" + implementation + "\n\n" + tests
         
-        # Write to the temporary file
-        src_file = os.path.join(self.rust_src, "lib.rs")
-        with open(src_file, "w") as f:
+        # Create a unique file name based on the entry point
+        file_prefix = entry_point.lower().replace("/", "_")
+        file_name = f"{file_prefix}.rs"
+        file_path = os.path.join(self.rust_bin, file_name)
+        
+        # Combine the code with tests and write to a file
+        combined_code = "fn main(){}\n" + declaration + "\n" + implementation + "\n\n" + tests
+        with open(file_path, "w") as f:
             f.write(combined_code)
         
         # Run cargo test
         process = subprocess.run(
-            ["cargo", "test", "--lib"],
+            ["cargo", "test", "--bin", file_prefix],
             cwd=self.rust_dir,
             capture_output=True,
             text=True
@@ -278,11 +280,12 @@ Only write the tests, not the implementation code.
         # Collect details
         details = {
             "duration": time.time() - start_time,
-            "command": "cargo test --lib",
+            "command": f"cargo test --bin {file_prefix}",
             "return_code": process.returncode,
             "stdout": process.stdout,
             "stderr": process.stderr,
-            "combined_code": combined_code
+            "combined_code": combined_code,
+            "file_path": file_path
         }
         
         if process.returncode != 0:
@@ -330,10 +333,9 @@ Provide a detailed analysis that would help someone fix the issues.
         return feedback, details
     
     def cleanup(self):
-        """Clean up temporary files"""
-        import shutil
-        if os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
+        """Cleanup temporary files if needed"""
+        # We're using the existing rust project, so no cleanup needed
+        pass
 
 
 def create_model(model_type: str, model_name: str, temperature: float, top_p: float) -> CodeGenerationModel:
