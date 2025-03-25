@@ -36,16 +36,15 @@ messages=messages
 """
 
 import os
-import openai
-from openai import OpenAI
-from dotenv import load_dotenv
+import argparse
 import jsonlines
 import termcolor
-
+from dotenv import load_dotenv
 from datasets import load_dataset
-from typing import List
+from typing import List, Optional
 from tqdm import tqdm
 
+from code_generation_models import CodeGenerationModel, OpenAIChatModel, LambdaLabsModel
 from content_parser import ContentParser, ParseError
 
 _CITATION = """
@@ -127,128 +126,181 @@ def get_prompt_explain_syn(sample, desc, language="python"):
     return desc + "\n" + instruction + "\n" + addon
 
 
-class ChatWrapper:
-
-    def __init__(self, model: str, temperature=0.2, top_p=0.95, client=None):
-        self._model = model
-        self._temperature = temperature
-        self._top_p = top_p
-        self._client = client
-
-    def __call__(self, prompt: str, n: int) -> str:
-        messages = [
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ]
-        while True:
-            try:
-                response = self._client.chat.completions.create(model=self._model,
-                messages=messages,
-                temperature=self._temperature,
-                top_p=self._top_p,
-                n=n)
-                content_list = list()
-                for i in range(n):
-                    message = response.choices[i].message
-                    assert message.role == "assistant"
-                    content_list.append(message.content)
-                return content_list
-            except Exception as e:
-                print("API EXCEPTION:", e)
-                # Wait a moment before retrying
-                import time
-                time.sleep(2)
-                continue
+def create_model(model_type: str, model_name: str, temperature: float, top_p: float) -> CodeGenerationModel:
+    """
+    Create a code generation model based on type
+    
+    Args:
+        model_type: Type of model to create ('openai', 'lambdalabs', etc.)
+        model_name: Name of the model
+        temperature: Temperature parameter
+        top_p: Top-p parameter
+        
+    Returns:
+        An instance of a CodeGenerationModel
+    """
+    if model_type.lower() == 'openai':
+        return OpenAIChatModel(model=model_name, temperature=temperature, top_p=top_p)
+    elif model_type.lower() == 'lambdalabs':
+        return LambdaLabsModel(model=model_name, temperature=temperature, top_p=top_p)
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
 
 
-if __name__ == '__main__':
-
-    # Load environment variables from .env file
-    load_dotenv()
-
-    # Configurable parameters
-    TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
-    TOP_P = float(os.getenv("TOP_P", "0.95"))
-    TIMES = int(os.getenv("TIMES", "1"))  # Number of samples per problem
-    VERBOSE = os.getenv("VERBOSE", "True").lower() == "true"
-    LANGUAGE = os.getenv("LANGUAGE", "rust")
-    TASK = os.getenv("TASK", "humanevalsynthesize")
-    LIMIT = os.getenv("LIMIT", None)
-
-    # Access API keys from environment variables
-    LAMBDALABS_API_KEY = os.getenv("LAMBDALABS_API_KEY")
-    CUSTOM_API_BASE = os.getenv("CUSTOM_API_BASE", "https://api.lambdalabs.com/v1")
-    MODEL = os.getenv("MODEL", "llama3.2-3b-instruct")
-
-    client = OpenAI(api_key=LAMBDALABS_API_KEY, base_url=CUSTOM_API_BASE)
-
-    print(f"Evaluating on {TASK} for {LANGUAGE}")
-    print(f"Settings: TIMES={TIMES}, TEMPERATURE={TEMPERATURE}, TOP_P={TOP_P}")
-
-    # Load descriptions
-    if TASK == "humanevalexplainsynthesize":
-        with jsonlines.open(f"completions_{LANGUAGE}_humanevalexplaindescribe.jsonl", "r") as f:
+def generate_completions(
+    task: str,
+    language: str,
+    model: CodeGenerationModel,
+    samples_per_problem: int = 1,
+    limit: Optional[int] = None,
+    verbose: bool = False,
+    output_file: Optional[str] = None
+):
+    """
+    Generate code completions for the given task and language
+    
+    Args:
+        task: Task type ('humanevalfix', 'humanevalsynthesize', etc.)
+        language: Programming language
+        model: CodeGenerationModel instance to use
+        samples_per_problem: Number of samples to generate per problem
+        limit: Optional limit on number of problems to process
+        verbose: Whether to print detailed information
+        output_file: Custom output file path (if None, a default is used)
+    """
+    # Load the dataset
+    samples = [s for s in load_dataset("bigcode/humanevalpack", language)["test"]]
+    print(f"Loaded {len(samples)} samples from HumanEvalPack {language} dataset")
+    
+    # Handle specific tasks
+    descriptions = None
+    if task == "humanevalexplainsynthesize":
+        with jsonlines.open(f"completions_{language}_humanevalexplaindescribe.jsonl", "r") as f:
             descriptions = [line["raw_generation"][0] for line in f]
-
-    # Load dataset
-    samples = [s for s in load_dataset("bigcode/humanevalpack", LANGUAGE)["test"]]
-    print(f"Loaded {len(samples)} samples from HumanEvalPack {LANGUAGE} dataset")
-
-    # Initialize the chat wrapper and parser
-    chat_wrapper = ChatWrapper(MODEL, temperature=TEMPERATURE, top_p=TOP_P, client=client)
-    parse_errors = 0
+    
+    # Initialize parser
     parser = ContentParser()
-
+    parse_errors = 0
+    
     # Process each sample
     for idx, sample in enumerate(tqdm(samples)):
-        if LIMIT and idx >= LIMIT:
+        if limit is not None and idx >= limit:
             break
-
-        if TASK == "humanevalfix":
-            prompt = get_prompt_fix(sample, language=LANGUAGE, mode="tests")
-        elif TASK == "humanevalsynthesize":
-            prompt = get_prompt_synthesize(sample, language=LANGUAGE)
-        elif TASK == "humanevalexplaindescribe":
-            prompt, docstring_len = get_prompt_explain_desc(sample, language=LANGUAGE)
-            gen = chat_wrapper(prompt, TIMES)
+            
+        # Get the appropriate prompt based on the task
+        if task == "humanevalfix":
+            prompt = get_prompt_fix(sample, language=language, mode="tests")
+        elif task == "humanevalsynthesize":
+            prompt = get_prompt_synthesize(sample, language=language)
+        elif task == "humanevalexplaindescribe":
+            prompt, docstring_len = get_prompt_explain_desc(sample, language=language)
+            gen = model.generate_code(prompt, samples_per_problem)
             sample["raw_generation"] = gen
             sample["generation"] = [gen_item[:docstring_len] for gen_item in gen]
-            continue
-        elif TASK == "humanevalexplainsynthesize":
+            continue  # Skip the normal parsing for this task
+        elif task == "humanevalexplainsynthesize":
             desc = descriptions[idx]
-            prompt = get_prompt_explain_syn(sample, desc, language=LANGUAGE)
-
-        if VERBOSE:
-            print(f"Processing {sample['task_id']} ({idx + 1}/{len(samples)}))...")
-
+            prompt = get_prompt_explain_syn(sample, desc, language=language)
+        else:
+            raise ValueError(f"Unknown task: {task}")
+            
+        if verbose:
+            print(f"Processing {sample['task_id']} ({idx + 1}/{len(samples)})...")
+            
         # Generate solutions
-        sample["raw_generation"] = chat_wrapper(prompt, TIMES)
-
+        sample["raw_generation"] = model.generate_code(prompt, samples_per_problem)
+        
         # Parse the generated solutions
         try:
-            sample["generation"] = [parser(prompt, generation_item, sample["entry_point"]) for generation_item in sample["raw_generation"]]
+            sample["generation"] = [
+                parser(prompt, generation_item, sample["entry_point"]) 
+                for generation_item in sample["raw_generation"]
+            ]
         except ParseError as e:
             parse_errors += 1
             print(f"PARSE EXCEPTION for {sample['task_id']}: {e}")
-            sample["generation"] = [""]
-
+            sample["generation"] = [""] * samples_per_problem
+            
         # Print details if verbose
-        if VERBOSE:
-            for i in range(TIMES):
+        if verbose:
+            for i in range(samples_per_problem):
                 print(termcolor.colored(sample["entry_point"], "yellow", attrs=["bold"]))
                 print(termcolor.colored(prompt, "yellow"))
                 print(termcolor.colored(sample["canonical_solution"], "red"))
                 print(termcolor.colored(sample["generation"][i], "green")+"\n\n")
-
+                
     # Print error rate
-    if VERBOSE:
+    if verbose:
         print(f"Parse error rate: {parse_errors / len(samples):.2%}")
-
+        
     # Save results to file
-    results_filename = f"completions_{LANGUAGE}_{TASK}.jsonl"
-    with jsonlines.open(results_filename, "w") as writer:
+    if output_file is None:
+        output_file = f"completions_{language}_{task}.jsonl"
+        
+    with jsonlines.open(output_file, "w") as writer:
         writer.write_all(samples)
+        
+    print(f"Results saved to {output_file}")
+    
 
-    print(f"Results saved to {results_filename}") 
+if __name__ == '__main__':
+    # Parse arguments
+    parser = argparse.ArgumentParser(description="Generate code completions for HumanEval tasks")
+    parser.add_argument("--task", type=str, default="humanevalsynthesize", 
+                        choices=["humanevalfix", "humanevalsynthesize", 
+                                 "humanevalexplaindescribe", "humanevalexplainsynthesize"],
+                        help="Task to generate completions for")
+    parser.add_argument("--language", type=str, default="rust",
+                        choices=list(LANGUAGE_TO_NAME.keys()),
+                        help="Programming language to generate completions for")
+    parser.add_argument("--model_type", type=str, default="lambdalabs",
+                        choices=["openai", "lambdalabs"],
+                        help="Type of model to use")
+    parser.add_argument("--model_name", type=str, default="llama3.2-3b-instruct",
+                        help="Name of the model to use")
+    parser.add_argument("--temperature", type=float, default=0.2,
+                        help="Temperature parameter for generation")
+    parser.add_argument("--top_p", type=float, default=0.95,
+                        help="Top-p parameter for generation")
+    parser.add_argument("--samples", type=int, default=1,
+                        help="Number of samples to generate per problem")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="Limit the number of problems to process (defaults to all)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Print detailed information")
+    parser.add_argument("--output_file", type=str, default=None,
+                        help="Custom output file path")
+                        
+    args = parser.parse_args()
+
+    # Load environment variables
+    load_dotenv()
+    
+    # Override from environment variables if not specified
+    model_type = os.getenv("MODEL_TYPE", args.model_type)
+    model_name = os.getenv("MODEL", args.model_name)
+    temperature = float(os.getenv("TEMPERATURE", args.temperature))
+    top_p = float(os.getenv("TOP_P", args.top_p))
+    samples = int(os.getenv("TIMES", args.samples))
+    verbose = os.getenv("VERBOSE", str(args.verbose)).lower() == "true"
+    task = os.getenv("TASK", args.task)
+    language = os.getenv("LANGUAGE", args.language)
+    limit = int(os.getenv("LIMIT", args.limit)) if os.getenv("LIMIT") or args.limit else None
+    
+    # Create the model
+    model = create_model(model_type, model_name, temperature, top_p)
+    
+    print(f"Evaluating on {task} for {language}")
+    print(f"Using model: {model.model_name}")
+    print(f"Settings: samples={samples}, temperature={temperature}, top_p={top_p}")
+    
+    # Generate completions
+    generate_completions(
+        task=task,
+        language=language,
+        model=model,
+        samples_per_problem=samples,
+        limit=limit,
+        verbose=verbose,
+        output_file=args.output_file
+    ) 
