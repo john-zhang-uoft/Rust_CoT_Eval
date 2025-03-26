@@ -174,28 +174,44 @@ class CodeReviewerAgent:
         with open(file_path, "w") as f:
             f.write(combined_code)
         
-        # Try to compile
-        process = subprocess.run(
-            ["cargo", "check", "--bin", file_prefix],
-            cwd=self.rust_dir,
-            capture_output=True,
-            text=True
-        )
+        # Try to compile with warnings about unused imports suppressed
+        try:
+            process = subprocess.run(
+                ["cargo", "check", "--bin", file_prefix, "--message-format=json"],
+                cwd=self.rust_dir,
+                capture_output=True,
+                text=True,
+                timeout=60  # Add 60-second timeout
+            )
+        except subprocess.TimeoutExpired:
+            print(termcolor.colored(f"Compilation timed out for {file_prefix}.rs", "red", attrs=["bold"]))
+            return False, "Compilation timed out after 60 seconds.", {
+                "duration": time.time() - start_time,
+                "error": "Compilation timed out",
+                "file_path": file_path
+            }
+        
+        # Filter out warnings about unused imports from stderr while keeping errors
+        stderr_lines = process.stderr.splitlines()
+        filtered_stderr = []
+        for line in stderr_lines:
+            if "warning: unused import" not in line:
+                filtered_stderr.append(line)
+        
+        filtered_stderr_text = "\n".join(filtered_stderr)
         
         # Collect details
         details = {
             "duration": time.time() - start_time,
-            "command": f"cargo check --bin {file_prefix}",
+            "command": f"cargo check --bin {file_prefix} --message-format=json",
             "return_code": process.returncode,
             "stdout": process.stdout,
-            "stderr": process.stderr,
+            "stderr": filtered_stderr_text,
+            "raw_stderr": process.stderr,
             "file_path": file_path
         }
         
         if process.returncode != 0:
-            # Compilation failed, extract error messages
-            error_output = process.stderr
-            
             # Use the model to summarize the error
             error_prompt = f"""
 Analyze this Rust compilation error and provide a clear, concise explanation of what's wrong and how to fix it:
@@ -206,7 +222,7 @@ rust
 
 
 Compilation error:
-{error_output}
+{filtered_stderr_text}
 
 
 Provide a brief explanation of what's wrong and how to fix it. Focus on issues in the implementation, not in the Cargo.toml or other project configuration.
@@ -289,13 +305,23 @@ Only write the tests, not the implementation code. Make sure the tests will run 
         with open(file_path, "w") as f:
             f.write(combined_code)
         
-        # Run cargo test
-        process = subprocess.run(
-            ["cargo", "test", "--bin", file_prefix],
-            cwd=self.rust_dir,
-            capture_output=True,
-            text=True
-        )
+        # Run cargo test with a timeout
+        try:
+            process = subprocess.run(
+                ["cargo", "test", "--bin", file_prefix],
+                cwd=self.rust_dir,
+                capture_output=True,
+                text=True,
+                timeout=60  # Add 60-second timeout
+            )
+        except subprocess.TimeoutExpired:
+            print(termcolor.colored(f"Test execution timed out for {file_prefix}.rs", "red", attrs=["bold"]))
+            return False, "Tests timed out after 60 seconds. This may indicate an infinite loop or deadlock in the implementation.", {
+                "duration": time.time() - start_time,
+                "error": "Test execution timed out",
+                "file_path": file_path,
+                "combined_code": combined_code
+            }
         
         # Collect details
         details = {
@@ -461,7 +487,21 @@ class MultiAgentModel(CodeGenerationModel):
                 print(f"\n" + termcolor.colored(f"REVIEW ITERATION {i+1}/{self._max_iterations}...", "cyan", attrs=["bold"]))
                 
             # Review the code
-            success, feedback, review_details = self._reviewer.review(prompt, declaration, code, entry_point)
+            try:
+                success, feedback, review_details = self._reviewer.review(prompt, declaration, code, entry_point)
+            except Exception as e:
+                # Handle any unexpected errors during review (including subprocess timeouts)
+                error_msg = f"Error during code review: {str(e)}"
+                print(termcolor.colored(error_msg, "red", attrs=["bold"]))
+                
+                if self._verbose:
+                    import traceback
+                    traceback.print_exc()
+                
+                # Create generic feedback about the error
+                feedback = f"There was an error during code review: {str(e)}. The code might have timing or resource issues. Please review the implementation for possible infinite loops, resource leaks, or excessive computation."
+                review_details = {"error": str(e)}
+                success = False
             
             if self._verbose:
                 print("\n" + termcolor.colored("REVIEWER OUTPUT:", "yellow", attrs=["bold"]))
@@ -492,29 +532,45 @@ class MultiAgentModel(CodeGenerationModel):
                     print("\n" + termcolor.colored("CODE PASSED ALL REVIEWS!", "green", attrs=["bold"]))
                 break
                 
+            if i == self._max_iterations - 1:
+                # Last iteration, don't refine further
+                break
+                
             if self._verbose:
                 print("\n" + termcolor.colored("REFINING CODE...", "cyan", attrs=["bold"]))
                 
             # Refine the code based on feedback
-            raw_new_code, parsed_new_code = self._generator.refine(prompt, code, feedback, entry_point)
-            
-            if self._verbose:
-                print("\n" + termcolor.colored("REFINED CODE (RAW):", "yellow", attrs=["bold"]))
-                print("-" * 40)
-                print(raw_new_code)
-                print("-" * 40)
-                print("\n" + termcolor.colored("REFINED CODE (PARSED):", "green", attrs=["bold"]))
-                print("-" * 40)
-                print(parsed_new_code)
-                print("-" * 40)
-            
-            # Check if the parsed code has changed
-            if parsed_new_code == code:
-                if self._verbose:
-                    print("\n" + termcolor.colored("CODE DIDN'T CHANGE AFTER REFINEMENT. STOPPING ITERATIONS.", "red", attrs=["bold"]))
-                break
+            try:
+                raw_new_code, parsed_new_code = self._generator.refine(prompt, code, feedback, entry_point)
                 
-            code = parsed_new_code
+                if self._verbose:
+                    print("\n" + termcolor.colored("REFINED CODE (RAW):", "yellow", attrs=["bold"]))
+                    print("-" * 40)
+                    print(raw_new_code)
+                    print("-" * 40)
+                    print("\n" + termcolor.colored("REFINED CODE (PARSED):", "green", attrs=["bold"]))
+                    print("-" * 40)
+                    print(parsed_new_code)
+                    print("-" * 40)
+                
+                # Check if the parsed code has changed
+                if parsed_new_code == code:
+                    if self._verbose:
+                        print("\n" + termcolor.colored("CODE DIDN'T CHANGE AFTER REFINEMENT. STOPPING ITERATIONS.", "red", attrs=["bold"]))
+                    break
+                
+                code = parsed_new_code
+            except Exception as e:
+                # Handle any unexpected errors during refinement
+                error_msg = f"Error during code refinement: {str(e)}"
+                print(termcolor.colored(error_msg, "red", attrs=["bold"]))
+                
+                if self._verbose:
+                    import traceback
+                    traceback.print_exc()
+                
+                # Stop the refinement loop on error
+                break
         
         # Return the final code (repeat if n > 1, though this isn't optimal)
         return [code] * n
