@@ -38,7 +38,8 @@ def create_multi_agent_model(
     language: str,
     max_iterations: int,
     verbose: bool,
-    skip_review: bool = False
+    skip_review: bool = False,
+    timeout: int = 60
 ) -> MultiAgentModel:
     """
     Create a MultiAgentModel with specified generation and review models
@@ -54,6 +55,7 @@ def create_multi_agent_model(
         max_iterations: Maximum number of refinement iterations
         verbose: Whether to print detailed logs
         skip_review: Whether to skip code review when cargo/compiler is not available
+        timeout: Timeout in seconds for subprocess calls (compilation/test execution)
         
     Returns:
         A MultiAgentModel instance
@@ -117,7 +119,8 @@ def run_multi_agent_completions(
     limit: Optional[int] = None,
     verbose: bool = False,
     output_file: Optional[str] = None,
-    skip_review: bool = False
+    skip_review: bool = False,
+    timeout: int = 60
 ) -> None:
     """
     Run multi-agent code generation on HumanEval tasks
@@ -137,6 +140,7 @@ def run_multi_agent_completions(
         verbose: Whether to print detailed logs
         output_file: Custom output file path (if None, a default is used)
         skip_review: Whether to skip code review when cargo/compiler is not available
+        timeout: Timeout in seconds for subprocess calls (compilation/test execution)
     """
     # Create the multi-agent model
     multi_agent = create_multi_agent_model(
@@ -149,7 +153,8 @@ def run_multi_agent_completions(
         language=language,
         max_iterations=max_iterations,
         verbose=verbose,
-        skip_review=skip_review
+        skip_review=skip_review,
+        timeout=timeout
     )
     
     # Set default output file if not provided
@@ -158,7 +163,7 @@ def run_multi_agent_completions(
     
     # Run generate_completions with the multi-agent model
     print(f"Running multi-agent generation on {task} for {language}")
-    print(f"Settings: samples={samples_per_problem}, temperature={temperature}, top_p={top_p}, max_iterations={max_iterations}")
+    print(f"Settings: samples={samples_per_problem}, temperature={temperature}, top_p={top_p}, max_iterations={max_iterations}, timeout={timeout}s")
     
     # Custom function to run generate_completions that passes declaration and entry_point
     from datasets import load_dataset
@@ -284,6 +289,8 @@ if __name__ == "__main__":
                         help="Custom output file path")
     parser.add_argument("--skip_review", action="store_true",
                         help="Skip code review when cargo/compiler is not available")
+    parser.add_argument("--timeout", type=int, default=60,
+                        help="Timeout in seconds for compilation and test execution")
                         
     args = parser.parse_args()
 
@@ -318,5 +325,6 @@ if __name__ == "__main__":
         limit=limit,
         verbose=verbose,
         output_file=args.output_file,
-        skip_review=args.skip_review
+        skip_review=args.skip_review,
+        timeout=int(os.getenv("TIMEOUT", args.timeout))
     )

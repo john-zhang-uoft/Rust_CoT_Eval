@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+"""
+Multi-agent code generation system with code review feedback
+"""
+
 import os
 import tempfile
 import subprocess
@@ -15,6 +20,8 @@ import termcolor
 from code_generation_models import CodeGenerationModel, OpenAIChatModel, LambdaLabsModel
 from content_parser import ContentParser, ParseError
 
+# Default timeout for subprocess calls (in seconds)
+DEFAULT_TIMEOUT = 60  # 1 minute timeout for compilation and test execution
 
 class CodeGeneratorAgent:
     """Agent that generates code based on prompts"""
@@ -59,44 +66,66 @@ class CodeGeneratorAgent:
         """
         Refine code based on feedback
         
+        Args:
+            prompt: Original problem prompt
+            code: Current code implementation
+            feedback: Feedback from reviewer
+            entry_point: Function name / entry point
+            
         Returns:
             Tuple of (raw_response, parsed_code)
         """
+        # Build prompt for refinement
         refinement_prompt = f"""
-Your previous code:
+You are a Rust programming expert. Your task is to fix the following code based on the feedback provided.
+
+Original Problem:
+{prompt}
+
+Current Implementation:
+```rust
 {code}
+```
 
-
-Feedback from code review:
+Feedback from Code Review:
 {feedback}
 
-Please improve your code based on this feedback. Provide only the refined code, no explanations.
+Please provide an improved version of the code that addresses all the issues mentioned in the feedback.
+Only output the complete, corrected code with no additional explanation.
+The function name should remain '{entry_point}'.
 """
-        full_prompt = prompt + "\n\n" + refinement_prompt
-        results = self.model.generate_code(full_prompt, n=1)
-        raw_response = results[0] if results else code  # Return original code if refinement fails
         
-        # Remove tests from the refined code before parsing
-        code_for_parsing = self._remove_tests(raw_response)
+        # Generate refined code
+        results = self.model.generate_code(refinement_prompt, n=1)
+        raw_response = results[0] if results else ""
+        
+        # Extract code from markdown blocks if present
+        code_pattern = r"```(?:rust)?\s*(.*?)\s*```"
+        code_match = re.search(code_pattern, raw_response, re.DOTALL)
+        clean_response = code_match.group(1) if code_match else raw_response
+        
+        # Clean up code by removing tests
+        cleaned_code = self._remove_tests(clean_response)
         
         # Parse the code if we have a parser
         if self.parser:
             try:
-                parsed_code = self.parser(prompt, code_for_parsing, entry_point)
+                parsed_code = self.parser(prompt, cleaned_code, entry_point)
                 return raw_response, parsed_code
             except ParseError:
                 print(f"Warning: Failed to parse refined code for {entry_point}")
-                return raw_response, raw_response
+                return raw_response, cleaned_code
         
-        return raw_response, raw_response
+        return raw_response, cleaned_code
 
 
 class CodeReviewerAgent:
     """Agent that reviews code, tests it, and provides feedback"""
     
-    def __init__(self, model: CodeGenerationModel, language: str = "rust"):
+    def __init__(self, model: CodeGenerationModel, language: str = "rust", timeout: int = DEFAULT_TIMEOUT):
         self.model = model
         self.language = language
+        self.timeout = timeout
         
         # Get absolute path to project root (where this script is located)
         self.project_root = os.path.dirname(os.path.abspath(__file__))
@@ -181,11 +210,11 @@ class CodeReviewerAgent:
                 cwd=self.rust_dir,
                 capture_output=True,
                 text=True,
-                timeout=60  # Add 60-second timeout
+                timeout=self.timeout  # Use instance timeout
             )
         except subprocess.TimeoutExpired:
-            print(termcolor.colored(f"Compilation timed out for {file_prefix}.rs", "red", attrs=["bold"]))
-            return False, "Compilation timed out after 60 seconds.", {
+            print(termcolor.colored(f"Compilation timed out for {file_prefix}.rs after {self.timeout} seconds", "red", attrs=["bold"]))
+            return False, f"Compilation timed out after {self.timeout} seconds.", {
                 "duration": time.time() - start_time,
                 "error": "Compilation timed out",
                 "file_path": file_path
@@ -308,35 +337,44 @@ Only write the tests, not the implementation code. Make sure the tests will run 
         # Run cargo test with a timeout
         try:
             process = subprocess.run(
-                ["cargo", "test", "--bin", file_prefix],
+                ["cargo", "test", "--bin", file_prefix, "--message-format=json"],
                 cwd=self.rust_dir,
                 capture_output=True,
                 text=True,
-                timeout=60  # Add 60-second timeout
+                timeout=self.timeout  # Use instance timeout 
             )
         except subprocess.TimeoutExpired:
-            print(termcolor.colored(f"Test execution timed out for {file_prefix}.rs", "red", attrs=["bold"]))
-            return False, "Tests timed out after 60 seconds. This may indicate an infinite loop or deadlock in the implementation.", {
+            print(termcolor.colored(f"Test execution timed out for {file_prefix}.rs after {self.timeout} seconds", "red", attrs=["bold"]))
+            return False, f"Tests timed out after {self.timeout} seconds. This may indicate an infinite loop or deadlock in the implementation.", {
                 "duration": time.time() - start_time,
                 "error": "Test execution timed out",
                 "file_path": file_path,
                 "combined_code": combined_code
             }
         
+        # Filter out warnings about unused imports from stderr while keeping errors
+        stderr_lines = process.stderr.splitlines()
+        filtered_stderr = []
+        for line in stderr_lines:
+            if "warning: unused import" not in line:
+                filtered_stderr.append(line)
+        
+        filtered_stderr_text = "\n".join(filtered_stderr)
+
         # Collect details
         details = {
             "duration": time.time() - start_time,
             "command": f"cargo test --bin {file_prefix}",
             "return_code": process.returncode,
             "stdout": process.stdout,
-            "stderr": process.stderr,
+            "stderr": filtered_stderr_text,
             "combined_code": combined_code,
             "file_path": file_path
         }
         
         if process.returncode != 0:
             # Tests failed
-            return False, process.stdout + "\n" + process.stderr, details
+            return False, process.stdout + "\n" + filtered_stderr_text, details
         
         return True, "All tests passed.", details
     
@@ -418,7 +456,8 @@ class MultiAgentModel(CodeGenerationModel):
         review_model: CodeGenerationModel,
         language: str = "rust",
         max_iterations: int = 3,
-        verbose: bool = False
+        verbose: bool = False,
+        timeout: int = DEFAULT_TIMEOUT
     ):
         """
         Initialize a multi-agent model
@@ -429,17 +468,19 @@ class MultiAgentModel(CodeGenerationModel):
             language: Programming language
             max_iterations: Maximum number of refinement iterations
             verbose: Whether to print detailed logs
+            timeout: Timeout for subprocess calls in seconds
         """
         self._gen_model = gen_model
         self._review_model = review_model
         self._language = language
         self._max_iterations = max_iterations
         self._verbose = verbose
+        self._timeout = timeout
         
         # Initialize agents
         parser = ContentParser()
         self._generator = CodeGeneratorAgent(gen_model, parser=parser)
-        self._reviewer = CodeReviewerAgent(review_model, language=language)
+        self._reviewer = CodeReviewerAgent(review_model, language=language, timeout=timeout)
     
     def generate_code(self, prompt: str, n: int = 1, declaration: str = None, entry_point: str = None) -> List[str]:
         """
@@ -652,6 +693,84 @@ class MultiAgentModel(CodeGenerationModel):
     @property
     def model_name(self) -> str:
         return f"MultiAgent({self._gen_model.model_name}+{self._review_model.model_name})"
+
+
+def create_multi_agent_model(
+    gen_model_type: str,
+    gen_model_name: str,
+    review_model_type: str,
+    review_model_name: str,
+    temperature: float,
+    top_p: float,
+    language: str,
+    max_iterations: int,
+    verbose: bool,
+    skip_review: bool = False,
+    timeout: int = DEFAULT_TIMEOUT
+) -> MultiAgentModel:
+    """
+    Create a MultiAgentModel with specified generation and review models
+    
+    Args:
+        gen_model_type: Type of model for code generation ('openai', 'lambdalabs', etc.)
+        gen_model_name: Name of the model for code generation
+        review_model_type: Type of model for code review
+        review_model_name: Name of the model for code review  
+        temperature: Temperature parameter for generation
+        top_p: Top-p parameter for generation
+        language: Programming language
+        max_iterations: Maximum number of refinement iterations
+        verbose: Whether to print detailed logs
+        skip_review: Whether to skip code review when cargo/compiler is not available
+        timeout: Timeout for subprocess calls in seconds
+        
+    Returns:
+        A MultiAgentModel instance
+    """
+    # Create the models
+    gen_model = create_model(
+        gen_model_type,
+        gen_model_name,
+        temperature,
+        top_p
+    )
+    
+    review_model = create_model(
+        review_model_type,
+        review_model_name,
+        temperature,
+        top_p
+    )
+    
+    print(f"Using generator model: {gen_model.model_name}")
+    print(f"Using reviewer model: {review_model.model_name}")
+    
+    # Check if cargo is available (for Rust)
+    cargo_available = True
+    if language == "rust" and not skip_review:
+        try:
+            # Try to create a reviewer to check if cargo is available
+            CodeReviewerAgent(review_model, language=language, timeout=timeout)
+        except FileNotFoundError as e:
+            cargo_available = False
+            print(f"Warning: {str(e)}")
+            print("Running in code generation only mode (no compilation or testing)")
+            if not skip_review:
+                print("Use --skip_review to suppress this warning")
+                max_iterations = 1  # No iterations if cargo not available
+    
+    # Create the multi-agent model
+    multi_agent = MultiAgentModel(
+        gen_model=gen_model,
+        review_model=review_model,
+        language=language,
+        max_iterations=max_iterations if cargo_available else 1,
+        verbose=verbose,
+        timeout=timeout
+    )
+    
+    print(f"Using multi-agent model: {multi_agent.model_name}")
+    return multi_agent
 
 
 def run_multi_agent_generation(
