@@ -29,17 +29,6 @@ class CodeGeneratorAgent(CodeGenerationModel):
     def __init__(self, model: CodeGenerationModel):
         self.model = model
 
-    def _remove_tests(self, code: str) -> str:
-        """
-        Remove test modules from the code to extract only the function implementation.
-        It removes any block starting with #[cfg(test)].
-        """
-        # Remove any content starting with #[cfg(test)] till the end of the string
-        cleaned_code = re.sub(r'(?s)#[\s]*\[cfg\(test\)\].*', '', code)
-        # Remove any content starting with #[test] till the end of the string
-        cleaned_code = re.sub(r'(?s)#[\s]*\[test\].*', '', cleaned_code)
-        return cleaned_code
-    
     def generate_code(self, prompt: str, n: int = 1, **kwargs) -> List[str]:
         """
         Generate code based on the prompt
@@ -76,20 +65,7 @@ Please provide an improved version of the code that addresses all the issues men
 Only output the complete, corrected code with no additional explanation.
 The function name should remain '{entry_point}'.
 """
-            results = self.model.generate_code(refinement_prompt, n=n)
-            
-            processed_results = []
-            for raw_response in results:
-                # Extract code from markdown blocks if present
-                code_pattern = r"```(?:rust)?\s*(.*?)\s*```"
-                code_match = re.search(code_pattern, raw_response, re.DOTALL)
-                clean_response = code_match.group(1) if code_match else raw_response
-                
-                # Clean up code by removing tests
-                cleaned_code = self._remove_tests(clean_response)
-                processed_results.append(cleaned_code)
-                
-            return processed_results
+            return self.model.generate_code(refinement_prompt, n=n)
         else:
             # Handle initial generation case
             return self.model.generate_code(prompt, n=n)
@@ -108,6 +84,7 @@ class CodeReviewerAgent(CodeGenerationModel):
         self.timeout = timeout
         self.thread_id = thread_id or os.getpid()  # Use process ID as default thread ID
         self._last_details = {}
+        self.parser = ContentParser()  # Initialize ContentParser for parsing code
         
         # Get absolute path to project root (where this script is located)
         self.project_root = os.path.dirname(os.path.abspath(__file__))
@@ -137,6 +114,78 @@ class CodeReviewerAgent(CodeGenerationModel):
                 
             print(f"Using Rust project at: {self.thread_rust_dir}")
             
+    def _parse_code(self, raw_code: str, prompt: str, entry_point: str) -> str:
+        """
+        Parse code using ContentParser to extract clean implementation
+        
+        Args:
+            raw_code: Raw code from model
+            prompt: Original prompt
+            entry_point: Function name / entry point
+            
+        Returns:
+            Parsed code
+        """
+        print(termcolor.colored(f"\nATTEMPTING TO PARSE CODE for {entry_point}:", "cyan", attrs=["bold"]))
+        
+        # Check if the raw code directly contains the entry point function
+        if f"fn {entry_point}" in raw_code:
+            print(f"Raw code contains function definition: 'fn {entry_point}'")
+        else:
+            print(f"WARNING: Raw code does not directly contain 'fn {entry_point}' - this may cause parsing issues")
+        
+        # Check for Markdown code blocks
+        code_blocks = re.findall(r'```(?:rust)?\s*(.*?)\s*```', raw_code, re.DOTALL)
+        if code_blocks:
+            print(f"Found {len(code_blocks)} Markdown code blocks in raw code")
+            # Print largest code block preview
+            largest_block = max(code_blocks, key=len)
+            preview = largest_block.split('\n')[:5]
+            print(f"Largest code block preview ({len(largest_block)} chars):")
+            print('\n'.join(preview))
+            if f"fn {entry_point}" in largest_block:
+                print(f"  - Contains function definition: 'fn {entry_point}'")
+        else:
+            print("No Markdown code blocks found in raw code")
+        
+        # Try to use ContentParser
+        try:
+            print(f"Calling ContentParser with entry_point='{entry_point}'")
+            parsed_code = self.parser(prompt, raw_code, entry_point)
+            print(termcolor.colored(f"\nPARSE SUCCESSFUL for {entry_point}:", "green", attrs=["bold"]))
+            print("-" * 40)
+            print(parsed_code)
+            print("-" * 40)
+            return parsed_code
+        except ParseError as e:
+            print(termcolor.colored(f"\nPARSE ERROR: {str(e)}", "red", attrs=["bold"]))
+            
+            # Fallback: Direct extraction of function
+            print("Attempting fallback extraction...")
+            pattern = fr'fn\s+{re.escape(entry_point)}[^{{]*{{[^{{]*(?:{{[^{{]*}}[^{{]*)*}}'
+            match = re.search(pattern, raw_code, re.DOTALL)
+            if match:
+                extracted_code = match.group(0)
+                print(termcolor.colored(f"\nFALLBACK EXTRACTION SUCCESSFUL:", "yellow", attrs=["bold"]))
+                print("-" * 40)
+                print(extracted_code)
+                print("-" * 40)
+                return extracted_code
+            
+            # If everything fails, try to extract from code blocks
+            if code_blocks:
+                for block in sorted(code_blocks, key=len, reverse=True):
+                    if f"fn {entry_point}" in block:
+                        print(termcolor.colored(f"\nEXTRACTING FROM CODE BLOCK:", "yellow", attrs=["bold"]))
+                        print("-" * 40)
+                        print(block)
+                        print("-" * 40)
+                        return block
+            
+            # Last resort: return raw code
+            print("All extraction attempts failed. Returning raw code.")
+            return raw_code
+            
     def generate_code(self, prompt: str, n: int = 1, **kwargs) -> List[str]:
         """
         Review the provided code implementation and return a list with the feedback
@@ -151,8 +200,11 @@ class CodeReviewerAgent(CodeGenerationModel):
         """
         # Extract parameters from kwargs
         declaration = kwargs.get("declaration", "")
-        implementation = kwargs.get("implementation", "")
+        raw_implementation = kwargs.get("implementation", "")
         entry_point = kwargs.get("entry_point", "solution")
+        
+        # Parse the implementation using ContentParser
+        implementation = self._parse_code(raw_implementation, prompt, entry_point)
         
         # Review the code
         success, feedback, details = self.review(prompt, declaration, implementation, entry_point)
@@ -221,10 +273,28 @@ class CodeReviewerAgent(CodeGenerationModel):
         file_name = f"{file_prefix}.rs"
         file_path = os.path.join(self.rust_bin, file_name)
         
-        # Combine the code and write to a file
-        combined_code = "#![allow(unused_imports)]\nfn main(){}\n" + declaration + "\n" + implementation
+        # Add necessary imports and directives
+        prelude = "#![allow(unused_imports)]\n#![allow(unused_variables)]\n"
+        
+        # Ensure there's a main function for binary compilation
+        has_main = "fn main()" in declaration or "fn main()" in implementation
+        main_fn = "" if has_main else "fn main(){}\n"
+        
+        # Combine the code with proper formatting
+        combined_code = f"{prelude}{main_fn}{declaration}\n{implementation}"
+        
+        # Print the code being compiled
+        print(termcolor.colored(f"\nCOMPILING CODE:", "cyan", attrs=["bold"]))
+        print("-" * 40)
+        print(combined_code)
+        print("-" * 40)
+        
+        # Write to file
         with open(file_path, "w") as f:
             f.write(combined_code)
+        
+        # Log what we're compiling
+        print(f"Compiling: {file_path}")
         
         # Try to compile with warnings about unused imports suppressed
         try:
@@ -286,6 +356,12 @@ Provide a brief explanation of what's wrong and how to fix it. Focus on issues i
         start_time = time.time()
         combined_code = declaration + "\n" + implementation
         
+        # Print the implementation we're generating tests for
+        print(termcolor.colored(f"\nGENERATING TESTS FOR IMPLEMENTATION:", "cyan", attrs=["bold"]))
+        print("-" * 40)
+        print(combined_code)
+        print("-" * 40)
+        
         test_prompt = f"""
 You are a Rust testing expert.
 You are trying to write comprehensive unit tests to ensure that a solution to the following Rust problem is correct:
@@ -298,14 +374,17 @@ Read the problem description carefully and write the unit tests to ensure that t
             test_prompt += f"""
 This is the solution you will be testing:
 
-rust
+```rust
 {combined_code}
+```
 
 The entry point function name is {entry_point}.
 """
         test_prompt += f"""
-Format your response as a Rust test module wrapped with #[cfg(test)] that can be directly appended to the code.
+Format your response as a complete Rust test module wrapped with #[cfg(test)] that can be directly appended to the code.
 Only write the tests, not the implementation code. Make sure the tests will run with 'cargo test'.
+Include useful test cases that would verify the function works correctly for various inputs.
+Do not include any explanations, comments, or markdown formatting in your response - only pure Rust code.
 """
         raw_test_code = self.model.generate_code(test_prompt, n=1)[0]
         
@@ -315,25 +394,81 @@ Only write the tests, not the implementation code. Make sure the tests will run 
             "raw_test_code": raw_test_code
         }
         
-        # Extract the test module
-        raw_test_code = raw_test_code.split("```rust")[1].split("```")[0]
-        print(termcolor.colored(f"Generated tests: {raw_test_code}", "green", attrs=["bold"]))
-
-        test_module_match = re.search(r'(#\[cfg\(test\)].+)', raw_test_code, re.DOTALL)
-        if test_module_match:
-            test_module = test_module_match.group(1)
-        else:
-            # If the pattern didn't match, just use the whole response and hope for the best
-            test_module = raw_test_code
-            details["module_extraction_failed"] = True
+        # Show the raw test code
+        print(termcolor.colored(f"\nRAW TEST CODE:", "cyan", attrs=["bold"]))
+        print("-" * 40)
+        print(raw_test_code)
+        print("-" * 40)
         
-        # Verify if the test code looks valid
-        if "#[test]" not in test_module:
+        # Extract test module directly instead of using ContentParser
+        # First try to extract from Markdown code blocks
+        code_blocks = re.findall(r'```(?:rust)?\s*(.*?)\s*```', raw_test_code, re.DOTALL)
+        if code_blocks:
+            # Use the largest code block
+            test_code = max(code_blocks, key=len)
+            print(termcolor.colored(f"\nEXTRACTED TEST CODE FROM CODE BLOCKS:", "cyan", attrs=["bold"]))
+            print("-" * 40)
+            print(test_code)
+            print("-" * 40)
+        else:
+            # Try to extract #[cfg(test)] module directly
+            test_module_match = re.search(r'(#\[cfg\(test\)].*)', raw_test_code, re.DOTALL)
+            if test_module_match:
+                test_code = test_module_match.group(1)
+                print(termcolor.colored(f"\nEXTRACTED TEST CODE FROM #[cfg(test)]:", "cyan", attrs=["bold"]))
+                print("-" * 40)
+                print(test_code)
+                print("-" * 40)
+            else:
+                # Just use the raw response, but remove any non-code content
+                # Remove any "Here's the test code:" prefixes
+                test_code = re.sub(r'^.*?(\bmod tests\b|\buse super::\*)', r'\1', raw_test_code, flags=re.DOTALL)
+                print(termcolor.colored(f"\nEXTRACTED TEST CODE FROM RAW RESPONSE:", "cyan", attrs=["bold"]))
+                print("-" * 40)
+                print(test_code)
+                print("-" * 40)
+        
+        # Ensure the test code starts with #[cfg(test)]
+        if not test_code.strip().startswith("#[cfg(test)]"):
+            # If the test module doesn't start with the proper module definition, add it
+            if "mod test" in test_code or "mod tests" in test_code:
+                # If it has a module but no cfg attribute
+                test_code = "#[cfg(test)]\n" + test_code
+            else:
+                # Add full wrapper
+                test_code = f"#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    {test_code}\n}}"
+                
+            print(termcolor.colored(f"\nADDED #[cfg(test)] WRAPPER:", "yellow", attrs=["bold"]))
+            print("-" * 40)
+            print(test_code)
+            print("-" * 40)
+        
+        # Check if the test module contains test functions
+        if "#[test]" not in test_code:
             details["valid_test_not_found"] = True
             return False, "Generated test code doesn't contain valid test functions.", details
         
-        details["test_module"] = test_module
-        return True, test_module, details
+        # Validate code structure - check for unbalanced braces
+        opening_braces = test_code.count('{')
+        closing_braces = test_code.count('}')
+        if opening_braces > closing_braces:
+            # Add missing closing braces
+            test_code += '\n' + '}' * (opening_braces - closing_braces)
+            print(termcolor.colored(f"\nFIXED UNBALANCED BRACES:", "yellow", attrs=["bold"]))
+            print("-" * 40)
+            print(test_code)
+            print("-" * 40)
+        
+        details["test_module"] = test_code
+        
+        # Print only a short preview of the tests to avoid overwhelming output
+        test_preview = test_code.split("\n")
+        if len(test_preview) > 5:
+            test_preview = test_preview[:5] + ["..."]
+        test_preview = "\n".join(test_preview)
+        print(termcolor.colored(f"\nFINAL TEST CODE (PREVIEW):\n{test_preview}", "green", attrs=["bold"]))
+        
+        return True, test_code, details
     
     def run_tests(self, declaration: str, implementation: str, tests: str, entry_point: str) -> Tuple[bool, str, Dict[str, Any]]:
         """Run the tests and check if they pass"""
@@ -344,10 +479,78 @@ Only write the tests, not the implementation code. Make sure the tests will run 
         file_name = f"{file_prefix}.rs"
         file_path = os.path.join(self.rust_bin, file_name)
         
-        # Combine the code with tests and write to a file
-        combined_code = "#![allow(unused_imports)]\nfn main(){}\n" + declaration + "\n" + implementation + "\n\n" + tests
+        # Add necessary imports and directives for better error handling
+        prelude = "#![allow(unused_imports)]\n#![allow(unused_variables)]\n#![allow(dead_code)]\n"
+        
+        # Ensure there's a main function for binary compilation
+        has_main = "fn main()" in declaration or "fn main()" in implementation
+        main_fn = "" if has_main else "fn main(){}\n"
+        
+        # Verify the test code is valid Rust and contains test functions
+        if "#[test]" not in tests:
+            return False, "Generated test code doesn't contain any test functions.", {
+                "duration": time.time() - start_time,
+                "error": "No test functions found"
+            }
+        
+        # Check for module sanity
+        if not tests.strip().startswith("#[cfg(test)]"):
+            tests = f"#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    {tests}\n}}"
+            print(termcolor.colored(f"Fixed test module wrapper", "yellow"))
+        
+        # Combine the code with proper formatting and tests
+        combined_code = f"{prelude}{main_fn}{declaration}\n{implementation}\n\n{tests}"
+        
+        # Clean up test failures that might cause compiler errors
+        # Make sure braces are balanced in the test code
+        opening_braces = combined_code.count('{')
+        closing_braces = combined_code.count('}')
+        if opening_braces > closing_braces:
+            # Add missing closing braces
+            combined_code += '\n' + '}' * (opening_braces - closing_braces)
+            print(termcolor.colored(f"Fixed {opening_braces - closing_braces} unbalanced braces", "yellow"))
+        
+        # Print the code and tests being run
+        print(termcolor.colored(f"\nRUNNING TESTS ON CODE:", "cyan", attrs=["bold"]))
+        print("-" * 40)
+        print(combined_code)
+        print("-" * 40)
+        
+        # Write to file
         with open(file_path, "w") as f:
             f.write(combined_code)
+        
+        # Log what we're testing
+        print(f"Testing: {file_path}")
+        
+        # First compile to check for syntax errors
+        try:
+            compile_process = subprocess.run(
+                ["cargo", "check", "--bin", file_prefix],
+                cwd=self.thread_rust_dir,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout  # Use instance timeout
+            )
+            
+            if compile_process.returncode != 0:
+                print(termcolor.colored(f"Compilation failed for tests:", "red", attrs=["bold"]))
+                print(compile_process.stderr)
+                return False, f"Test compilation failed: {compile_process.stderr}", {
+                    "duration": time.time() - start_time,
+                    "error": "Test compilation failed",
+                    "stderr": compile_process.stderr,
+                    "combined_code": combined_code,
+                    "file_path": file_path
+                }
+        except subprocess.TimeoutExpired:
+            print(termcolor.colored(f"Compilation timed out for {file_prefix}.rs after {self.timeout} seconds", "red", attrs=["bold"]))
+            return False, f"Test compilation timed out after {self.timeout} seconds.", {
+                "duration": time.time() - start_time,
+                "error": "Test compilation timed out",
+                "file_path": file_path,
+                "combined_code": combined_code
+            }
         
         # Run cargo test with a timeout
         try:
@@ -380,47 +583,94 @@ Only write the tests, not the implementation code. Make sure the tests will run 
         
         if process.returncode != 0:
             # Tests failed
+            print(termcolor.colored(f"Tests failed for {file_prefix}.rs", "red", attrs=["bold"]))
+            # Extract relevant test failure info
+            test_output = process.stdout
+            if "test result: FAILED" in test_output:
+                print(termcolor.colored(f"Test failures:", "red"))
+                # Extract the failing test info for clarity
+                failing_tests = re.findall(r'test (.*?) \.\.\. FAILED', test_output)
+                for test in failing_tests:
+                    print(termcolor.colored(f"  - {test}", "red"))
             return False, process.stdout + "\n" + process.stderr, details
+        
+        print(termcolor.colored(f"Tests passed for {file_prefix}.rs", "green", attrs=["bold"]))
+        # Extract test summary for clarity
+        test_count_match = re.search(r'running (\d+) tests', process.stdout)
+        test_count = test_count_match.group(1) if test_count_match else "?"
+        print(termcolor.colored(f"All {test_count} tests passed!", "green"))
         
         return True, "All tests passed.", details
     
     def generate_detailed_feedback(self, prompt: str, declaration: str, implementation: str, tests: str, test_output: str) -> Tuple[str, Dict[str, Any]]:
         """Generate detailed feedback about why tests failed"""
         start_time = time.time()
-        prompt = f"""
-Analyze why these tests are failing for the given problem:
+        
+        # First do some basic analysis of the test failures
+        print(termcolor.colored(f"\nANALYZING TEST FAILURES:", "cyan", attrs=["bold"]))
+        
+        # Extract failing tests
+        failing_tests = re.findall(r'test (.*?) \.\.\. FAILED', test_output)
+        if failing_tests:
+            print(f"Detected {len(failing_tests)} failing tests:")
+            for test in failing_tests:
+                print(f"  - {test}")
+                
+            # Try to extract failure messages
+            failure_details = re.findall(r'thread .* panicked at (.*?)(,|\n)', test_output)
+            if failure_details:
+                print("Failure messages:")
+                for detail in failure_details:
+                    print(f"  - {detail[0]}")
+        
+        feedback_prompt = f"""
+As a Rust expert, analyze why these tests are failing for the given problem:
 
-Problem:
+Problem description:
 {prompt}
 
-Code:
-rust
+Implementation:
+```rust
 {declaration}
 
 {implementation}
+```
 
+Test code:
+```rust
 {tests}
+```
 
-
-Test output:
+Test output (showing failures):
+```
 {test_output}
+```
 
+Please provide a detailed analysis of the problems in the implementation:
+1. Identify which test cases are failing and why they're failing (expected vs. actual behavior)
+2. Point out the specific parts of the code that have logical errors
+3. Explain clearly how the code should be fixed
+4. For each bug, describe both the cause and the solution
 
-Carefully review the code line by line. Identify what's going wrong with the implementation.
-Focus on:
-1. What test cases are failing
-2. Why they're failing (examine expected vs. actual behavior)
-3. What specific parts of the code logic are incorrect
-4. How the code should be fixed
-
-Provide a detailed analysis that would help someone fix the issues.
+Your feedback should be specific and focus on fixing the implementation, not the tests.
 """
-        feedback = self.model.generate_code(prompt, n=1)[0]
+        feedback = self.model.generate_code(feedback_prompt, n=1)[0]
         
         details = {
             "duration": time.time() - start_time,
-            "feedback": feedback
+            "feedback": feedback,
+            "failing_tests": failing_tests
         }
+        
+        # Print a preview of the feedback
+        print(termcolor.colored(f"\nGENERATED FEEDBACK:", "cyan", attrs=["bold"]))
+        print("-" * 40)
+        feedback_preview = feedback.split('\n')
+        if len(feedback_preview) > 10:
+            print('\n'.join(feedback_preview[:10] + ['...']))
+        else:
+            print(feedback)
+        print("-" * 40)
         
         return feedback, details
     
@@ -466,6 +716,12 @@ def get_prompt_from_sample(sample: Dict[str, Any], language: str = "rust") -> st
 class MultiAgentModel(CodeGenerationModel):
     """CodeGenerationModel implementation using multi-agent approach with code generation and review"""
     
+    # Possible exit reasons
+    EXIT_REASON_SUCCESS = "success"  # All tests passed
+    EXIT_REASON_MAX_ITERATIONS = "max_iterations"  # Reached maximum iterations
+    EXIT_REASON_NO_CHANGE = "no_change"  # Code didn't change after refinement
+    EXIT_REASON_ERROR = "error"  # Error during refinement
+    
     def __init__(
         self,
         gen_model: CodeGenerationModel,
@@ -500,7 +756,7 @@ class MultiAgentModel(CodeGenerationModel):
         self._generator = CodeGeneratorAgent(gen_model)
         self._reviewer = CodeReviewerAgent(review_model, language=language, timeout=timeout, thread_id=thread_id)
     
-    def generate_code(self, prompt: str, n: int = 1, declaration: str = None, entry_point: str = None) -> List[str]:
+    def generate_code(self, prompt: str, n: int = 1, declaration: str = None, entry_point: str = None) -> Tuple[List[str], Dict[str, Any]]:
         """
         Generate code using the multi-agent approach
         
@@ -511,7 +767,9 @@ class MultiAgentModel(CodeGenerationModel):
             entry_point: The function name / entry point (if None, will try to parse from declaration)
             
         Returns:
-            List containing the generated code completion
+            Tuple containing:
+                - List of generated code completions
+                - Dictionary with generation details including exit_reason, iterations, success status
         """
         # Parse the prompt to extract declaration and entry point if not provided
         if declaration is None or entry_point is None:
@@ -519,33 +777,41 @@ class MultiAgentModel(CodeGenerationModel):
             declaration = declaration or parsed_decl
             entry_point = entry_point or parsed_entry
         
-        if self._verbose:
+        if self._verbose or True:  # Always print these, regardless of verbose flag
             print("\n" + termcolor.colored("GENERATING INITIAL CODE...", "cyan", attrs=["bold"]))
             print(f"Entry point: {entry_point}")
+            print(f"Declaration: {declaration}")
             
-        # Generate the initial code
-        generated_codes = self._generator.generate_code(prompt, n=1, entry_point=entry_point)
-        code = generated_codes[0] if generated_codes else ""
+        # Generate the initial code - raw output from the model
+        raw_codes = self._generator.generate_code(prompt, n=1, entry_point=entry_point)
+        raw_code = raw_codes[0] if raw_codes else ""
         
-        if self._verbose:
-            print("\n" + termcolor.colored("GENERATOR OUTPUT:", "yellow", attrs=["bold"]))
+        if self._verbose or True:  # Always print these, regardless of verbose flag
+            print("\n" + termcolor.colored("GENERATOR RAW OUTPUT:", "yellow", attrs=["bold"]))
             print("-" * 40)
-            print(code)
+            print(raw_code)
             print("-" * 40)
         
         # Refinement loop
         success = False
+        current_raw_code = raw_code
+        exit_reason = self.EXIT_REASON_MAX_ITERATIONS  # Default exit reason
+        iterations_data = []  # Track data for each iteration
+        
         for i in range(self._max_iterations):
-            if self._verbose:
+            if self._verbose or True:  # Always print these, regardless of verbose flag
                 print(f"\n" + termcolor.colored(f"REVIEW ITERATION {i+1}/{self._max_iterations}...", "cyan", attrs=["bold"]))
                 
             # Review the code
             try:
+                # The reviewer will parse the raw code and compile/test it
+                print(termcolor.colored(f"\nSending raw code to reviewer for parsing and testing:", "cyan", attrs=["bold"]))
+                
                 feedback_list = self._reviewer.generate_code(
                     prompt, 
                     n=1, 
                     declaration=declaration, 
-                    implementation=code, 
+                    implementation=current_raw_code, 
                     entry_point=entry_point
                 )
                 feedback = feedback_list[0] if feedback_list else ""
@@ -571,6 +837,16 @@ class MultiAgentModel(CodeGenerationModel):
                     # Fallback for safety
                     success = False
                 
+                # Store iteration data
+                iteration_data = {
+                    "iteration": i,
+                    "raw_code": current_raw_code,
+                    "feedback": feedback,
+                    "review_details": review_details,
+                    "success": success
+                }
+                iterations_data.append(iteration_data)
+                
             except Exception as e:
                 # Handle any unexpected errors during review (including subprocess timeouts)
                 error_msg = f"Error during code review: {str(e)}"
@@ -584,8 +860,22 @@ class MultiAgentModel(CodeGenerationModel):
                 feedback = f"There was an error during code review: {str(e)}. The code might have timing or resource issues. Please review the implementation for possible infinite loops, resource leaks, or excessive computation."
                 review_details = {"error": str(e)}
                 success = False
+                
+                # Store iteration data for error case
+                iteration_data = {
+                    "iteration": i,
+                    "raw_code": current_raw_code,
+                    "feedback": feedback,
+                    "review_details": review_details,
+                    "success": False,
+                    "error": str(e)
+                }
+                iterations_data.append(iteration_data)
+                
+                # Set exit reason to error
+                exit_reason = self.EXIT_REASON_ERROR
             
-            if self._verbose:
+            if self._verbose or True:  # Always print these, regardless of verbose flag
                 print("\n" + termcolor.colored("REVIEWER OUTPUT:", "yellow", attrs=["bold"]))
                 print("-" * 40)
                 print(feedback)
@@ -610,42 +900,44 @@ class MultiAgentModel(CodeGenerationModel):
                         print("-" * 40)
             
             if success:
-                if self._verbose:
+                if self._verbose or True:  # Always print these, regardless of verbose flag
                     print("\n" + termcolor.colored("CODE PASSED ALL REVIEWS!", "green", attrs=["bold"]))
+                exit_reason = self.EXIT_REASON_SUCCESS
                 break
                 
             if i == self._max_iterations - 1:
                 # Last iteration, don't refine further
                 break
                 
-            if self._verbose:
+            if self._verbose or True:  # Always print these, regardless of verbose flag
                 print("\n" + termcolor.colored("REFINING CODE...", "cyan", attrs=["bold"]))
                 
-            # Refine the code based on feedback
+            # Refine the code based on feedback - get new raw code
             try:
                 refined_codes = self._generator.generate_code(
                     prompt, 
                     n=1, 
                     entry_point=entry_point, 
-                    code=code, 
+                    code=current_raw_code,  # Use the current raw code 
                     feedback=feedback
                 )
                 
-                refined_code = refined_codes[0] if refined_codes else ""
+                new_raw_code = refined_codes[0] if refined_codes else ""
                 
-                if self._verbose:
+                if self._verbose or True:  # Always print these, regardless of verbose flag
                     print("\n" + termcolor.colored("REFINED CODE:", "green", attrs=["bold"]))
                     print("-" * 40)
-                    print(refined_code)
+                    print(new_raw_code)
                     print("-" * 40)
                 
-                # Check if the code has changed
-                if refined_code == code:
-                    if self._verbose:
+                # Check if the raw code has changed
+                if new_raw_code == current_raw_code:
+                    if self._verbose or True:  # Always print these, regardless of verbose flag
                         print("\n" + termcolor.colored("CODE DIDN'T CHANGE AFTER REFINEMENT. STOPPING ITERATIONS.", "red", attrs=["bold"]))
+                    exit_reason = self.EXIT_REASON_NO_CHANGE
                     break
                 
-                code = refined_code
+                current_raw_code = new_raw_code
             except Exception as e:
                 # Handle any unexpected errors during refinement
                 error_msg = f"Error during code refinement: {str(e)}"
@@ -655,11 +947,34 @@ class MultiAgentModel(CodeGenerationModel):
                     import traceback
                     traceback.print_exc()
                 
+                # Set exit reason to error
+                exit_reason = self.EXIT_REASON_ERROR
+                
                 # Stop the refinement loop on error
                 break
         
-        # Return the final code (repeat if n > 1, though this isn't optimal)
-        return [code] * n
+        # Get the final parsed implementation from the reviewer
+        print(termcolor.colored(f"\nGETTING FINAL PARSED CODE:", "cyan", attrs=["bold"]))
+        final_code = self._reviewer._parse_code(current_raw_code, prompt, entry_point)
+        
+        if self._verbose or True:  # Always print these, regardless of verbose flag
+            print("\n" + termcolor.colored("FINAL PARSED CODE:", "green", attrs=["bold"]))
+            print("-" * 40)
+            print(final_code)
+            print("-" * 40)
+            print(f"Exit reason: {exit_reason}")
+        
+        # Prepare generation details
+        generation_details = {
+            "exit_reason": exit_reason,
+            "success": success,
+            "iterations": len(iterations_data),
+            "iterations_data": iterations_data,
+            "final_parsed_code": final_code
+        }
+        
+        # Return the final code and generation details
+        return [current_raw_code] * n, generation_details
     
     def _parse_prompt(self, prompt: str) -> Tuple[str, str]:
         """
@@ -823,6 +1138,101 @@ def create_multi_agent_model(
     return multi_agent
 
 
+def run_multi_agent_generation(
+    language: str,
+    gen_model: CodeGenerationModel,
+    review_model: CodeGenerationModel,
+    samples: List[Dict[str, Any]],
+    max_iterations: int = 3,
+    verbose: bool = False,
+    limit: Optional[int] = None,
+    skip_review: bool = False
+) -> List[Dict[str, Any]]:
+    """
+    Run the multi-agent generation process on the provided samples
+    
+    Args:
+        language: Programming language
+        gen_model: Model for code generation
+        review_model: Model for code review
+        samples: List of samples to process
+        max_iterations: Maximum number of refinement iterations
+        verbose: Whether to print detailed logs
+        limit: Optional limit on the number of samples to process
+        skip_review: Whether to skip code review
+        
+    Returns:
+        List of processed samples with results
+    """
+    # Check if cargo is available (for Rust)
+    cargo_available = True
+    if language == "rust" and not skip_review:
+        try:
+            # Try to create a reviewer to check if cargo is available
+            CodeReviewerAgent(review_model, language=language)
+        except FileNotFoundError as e:
+            cargo_available = False
+            print(f"Warning: {str(e)}")
+            print("Running in code generation only mode (no compilation or testing)")
+    
+    # Create multi-agent model
+    multi_agent = MultiAgentModel(
+        gen_model=gen_model,
+        review_model=review_model,
+        language=language,
+        max_iterations=max_iterations if cargo_available else 1,  # No iterations if cargo not available
+        verbose=verbose
+    )
+    
+    processed_samples = []
+    
+    # Process each sample
+    for idx, sample in enumerate(tqdm(samples)):
+        if limit is not None and idx >= limit:
+            break
+            
+        if verbose:
+            print(f"\n{'-'*80}")
+            print(f"Processing sample {idx+1}/{len(samples)}: {sample['task_id']}")
+            print(f"{'-'*80}")
+            
+        # Get the prompt
+        prompt = get_prompt_from_sample(sample, language)
+        
+        # Get declaration and entry_point directly from the sample
+        declaration = sample["declaration"]
+        entry_point = sample["entry_point"]
+        
+        # Generate initial code for tracking
+        generator = CodeGeneratorAgent(gen_model)
+        initial_raw_code = generator.generate_code(prompt, n=1, entry_point=entry_point)[0]
+        
+        # Generate code using multi-agent model with explicit declaration and entry_point
+        final_code, generation_details = multi_agent.generate_code(
+            prompt, 
+            declaration=declaration, 
+            entry_point=entry_point
+        )
+        final_code = final_code[0]  # Unpack the list
+        
+        # Store results with generation details
+        result = {
+            "task_id": sample["task_id"],
+            "entry_point": entry_point,
+            "declaration": declaration,
+            "prompt": prompt,
+            "final_code": final_code,
+            "success": generation_details.get("success", False),
+            "exit_reason": generation_details.get("exit_reason", "unknown"),
+            "iterations": generation_details.get("iterations_data", []),
+            "canonical_solution": sample.get("canonical_solution", "")
+        }
+        
+        processed_samples.append(result)
+    
+    return processed_samples
+
+
 if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser(description="Multi-agent code generation with review feedback")
@@ -850,8 +1260,6 @@ if __name__ == "__main__":
                         help="Limit the number of samples to process")
     parser.add_argument("--verbose", action="store_true",
                         help="Print detailed logs")
-    parser.add_argument("--use_multi_agent", action="store_true", default=True,
-                        help="Use the MultiAgentModel class instead of the legacy implementation")
     parser.add_argument("--skip_review", action="store_true", default=False,
                         help="Skip code review")
                         
@@ -906,51 +1314,23 @@ if __name__ == "__main__":
         entry_point = sample["entry_point"]
         
         # Generate code using multi-agent model with explicit declaration and entry_point
-        code_list = multi_agent.generate_code(
+        final_code, generation_details = multi_agent.generate_code(
             prompt, 
             declaration=declaration, 
             entry_point=entry_point
         )
-        code = code_list[0] if code_list else ""
+        final_code = final_code[0]  # Unpack the list
         
-        # Review the final code to get success status
-        reviewer = CodeReviewerAgent(multi_agent._review_model, language=args.language)
-        feedback_list = reviewer.generate_code(
-            prompt, 
-            n=1, 
-            declaration=sample["declaration"], 
-            implementation=code, 
-            entry_point=sample["entry_point"]
-        )
-        review_details = reviewer.get_last_details()
-        
-        # Get success value from review result 
-        try:
-            # Try to get explicit success value
-            success_value = review_details.get("success")
-            if success_value is not None:
-                success = success_value
-            else:
-                # Try to determine from test and compilation results
-                test_execution = review_details.get("test_execution", {})
-                compile_status = review_details.get("compilation", {})
-                
-                # Consider success if both compilation and tests passed
-                success = (
-                    test_execution.get("return_code", 1) == 0 and
-                    compile_status.get("return_code", 1) == 0
-                )
-        except Exception:
-            success = False
-        
-        # Store results with minimal tracking
+        # Store results with generation details
         result = {
             "task_id": sample["task_id"],
             "entry_point": entry_point,
             "declaration": declaration,
             "prompt": prompt,
-            "final_code": code,
-            "success": success,
+            "final_code": final_code,
+            "success": generation_details.get("success", False),
+            "exit_reason": generation_details.get("exit_reason", "unknown"),
+            "iterations": generation_details.get("iterations_data", []),
             "canonical_solution": sample.get("canonical_solution", "")
         }
         
@@ -967,3 +1347,13 @@ if __name__ == "__main__":
     success_count = sum(1 for r in results if r["success"])
     success_rate = success_count / len(results) if results else 0
     print(f"Success rate: {success_rate:.2%} ({success_count}/{len(results)})")
+    
+    # Print exit reason statistics
+    exit_reasons = {}
+    for r in results:
+        exit_reason = r.get("exit_reason", "unknown")
+        exit_reasons[exit_reason] = exit_reasons.get(exit_reason, 0) + 1
+    
+    print("\nExit reason statistics:")
+    for reason, count in exit_reasons.items():
+        print(f"  {reason}: {count} ({count/len(results):.2%})")
