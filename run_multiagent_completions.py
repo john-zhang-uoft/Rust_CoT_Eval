@@ -21,7 +21,9 @@ from generate_completions import (
     generate_completions,
     LANGUAGE_TO_NAME,
     get_prompt_synthesize,
-    get_prompt_fix
+    get_prompt_fix,
+    get_prompt_explain_desc,
+    get_prompt_explain_syn
 )
 from code_generation_models import CodeGenerationModel
 
