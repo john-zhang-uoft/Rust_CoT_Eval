@@ -30,6 +30,8 @@ class CodeGeneratorAgent:
         """
         # Remove any content starting with #[cfg(test)] till the end of the string
         cleaned_code = re.sub(r'(?s)#[\s]*\[cfg\(test\)\].*', '', code)
+        # Remove any content starting with #[test] till the end of the string
+        cleaned_code = re.sub(r'(?s)#[\s]*\[test\].*', '', cleaned_code)
         return cleaned_code
     
     def generate(self, prompt: str, entry_point: str) -> Tuple[str, str]:
@@ -42,13 +44,10 @@ class CodeGeneratorAgent:
         results = self.model.generate_code(prompt, n=1)
         raw_response = results[0] if results else ""
         
-        # Remove tests from the generated code before parsing
-        code_for_parsing = self._remove_tests(raw_response)
-        
         # Parse the code if we have a parser
         if self.parser:
             try:
-                parsed_code = self.parser(prompt, code_for_parsing, entry_point)
+                parsed_code = self.parser(prompt, raw_response, entry_point)
                 return raw_response, parsed_code
             except ParseError:
                 print(f"Warning: Failed to parse generated code for {entry_point}")
@@ -117,7 +116,7 @@ class CodeReviewerAgent:
                 
             print(f"Using Rust project at: {self.rust_dir}")
     
-    def review(self, declaration: str, implementation: str, entry_point: str) -> Tuple[bool, str, Dict[str, Any]]:
+    def review(self, prompt: str, declaration: str, implementation: str, entry_point: str) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Review the provided code implementation
         
@@ -125,11 +124,11 @@ class CodeReviewerAgent:
             Tuple of (success, feedback, details)
         """
         if self.language == "rust":
-            return self.review_rust(declaration, implementation, entry_point)
+            return self.review_rust(prompt,declaration, implementation, entry_point)
         else:
             return False, f"Language {self.language} not supported for review", {}
     
-    def review_rust(self, declaration: str, implementation: str, entry_point: str) -> Tuple[bool, str, Dict[str, Any]]:
+    def review_rust(self, prompt: str, declaration: str, implementation: str, entry_point: str) -> Tuple[bool, str, Dict[str, Any]]:
         """Review Rust code"""
         details = {}
         
@@ -141,7 +140,7 @@ class CodeReviewerAgent:
             return False, f"Compilation failed: {compile_feedback}", details
         
         # Step 2: Generate and run tests
-        tests_generated, test_code, test_gen_details = self.generate_tests(declaration, implementation, entry_point)
+        tests_generated, test_code, test_gen_details = self.generate_tests(prompt, declaration, implementation, entry_point)
         details["test_generation"] = test_gen_details
         
         if not tests_generated:
@@ -154,7 +153,7 @@ class CodeReviewerAgent:
         if not tests_pass:
             # Step 4: If tests fail, generate more detailed feedback
             detailed_feedback, analysis_details = self.generate_detailed_feedback(
-                declaration, implementation, test_code, test_output
+                prompt,declaration, implementation, test_code, test_output
             )
             details["analysis"] = analysis_details
             return False, detailed_feedback, details
@@ -223,25 +222,28 @@ Provide a brief explanation of what's wrong and how to fix it. Focus on issues i
         print(termcolor.colored(f"Compilation succeeded for {file_prefix}.rs in {details['duration']:.2f} seconds.", "green"))
         return True, "Code compiles successfully.", details
     
-    def generate_tests(self, declaration: str, implementation: str, entry_point: str) -> Tuple[bool, str, Dict[str, Any]]:
+    def generate_tests(self, prompt: str, declaration: str, implementation: str, entry_point: str, implementation_visible: bool = True) -> Tuple[bool, str, Dict[str, Any]]:
         """Generate unit tests for the code"""
         start_time = time.time()
         combined_code = declaration + "\n" + implementation
         
         test_prompt = f"""
-Write comprehensive unit tests for this Rust function:
+You are a Rust testing expert.
+You are trying to write comprehensive unit tests to ensure that a solution to the following Rust problem is correct:
+Read the problem description carefully and write the unit tests to ensure that the solutions solve the problem described.
+Problem:
+{prompt}
+"""     
+        if implementation_visible:
+            test_prompt += f"""
+This is the solution you will be testing:
 
 rust
 {combined_code}
 
-
 The entry point function name is {entry_point}.
-
-Create multiple test cases that thoroughly test the function, including:
-1. Normal cases
-2. Edge cases
-3. Boundary conditions
-
+"""
+        test_prompt += f"""
 Format your response as a Rust test module wrapped with #[cfg(test)] that can be directly appended to the code.
 Only write the tests, not the implementation code. Make sure the tests will run with 'cargo test'.
 """
@@ -312,11 +314,14 @@ Only write the tests, not the implementation code. Make sure the tests will run 
         
         return True, "All tests passed.", details
     
-    def generate_detailed_feedback(self, declaration: str, implementation: str, tests: str, test_output: str) -> Tuple[str, Dict[str, Any]]:
+    def generate_detailed_feedback(self, prompt: str, declaration: str, implementation: str, tests: str, test_output: str) -> Tuple[str, Dict[str, Any]]:
         """Generate detailed feedback about why tests failed"""
         start_time = time.time()
         prompt = f"""
-Analyze why these tests are failing for the given Rust code:
+Analyze why these tests are failing for the given problem:
+
+Problem:
+{prompt}
 
 Code:
 rust
@@ -378,61 +383,65 @@ def get_prompt_from_sample(sample: Dict[str, Any], language: str = "rust") -> st
         return sample['instruction']
 
 
-def run_multi_agent_generation(
-    language: str,
-    gen_model: CodeGenerationModel,
-    review_model: CodeGenerationModel,
-    samples: List[Dict[str, Any]],
-    max_iterations: int = 3,
-    verbose: bool = False,
-    limit: Optional[int] = None
-) -> List[Dict[str, Any]]:
-    """
-    Run the multi-agent generation process on the provided samples
+class MultiAgentModel(CodeGenerationModel):
+    """CodeGenerationModel implementation using multi-agent approach with code generation and review"""
     
-    Args:
-        language: Programming language
-        gen_model: Model for code generation
-        review_model: Model for code review
-        samples: List of samples to process
-        max_iterations: Maximum number of refinement iterations
-        verbose: Whether to print detailed logs
-        limit: Optional limit on the number of samples to process
+    def __init__(
+        self,
+        gen_model: CodeGenerationModel,
+        review_model: CodeGenerationModel,
+        language: str = "rust",
+        max_iterations: int = 3,
+        verbose: bool = False
+    ):
+        """
+        Initialize a multi-agent model
         
-    Returns:
-        List of processed samples with results
-    """
-    # Initialize agents
-    parser = ContentParser()
-    generator = CodeGeneratorAgent(gen_model, parser=parser)
-    reviewer = CodeReviewerAgent(review_model, language=language)
-    
-    processed_samples = []
-    
-    # Process each sample
-    for idx, sample in enumerate(tqdm(samples)):
-        if limit is not None and idx >= limit:
-            break
-            
-        if verbose:
-            print(f"\n{'-'*80}")
-            print(f"Processing sample {idx+1}/{len(samples)}: {sample['task_id']}")
-            print(f"{'-'*80}")
-            
-        # Get the prompt
-        prompt = get_prompt_from_sample(sample, language)
+        Args:
+            gen_model: Model for code generation
+            review_model: Model for code review
+            language: Programming language
+            max_iterations: Maximum number of refinement iterations
+            verbose: Whether to print detailed logs
+        """
+        self._gen_model = gen_model
+        self._review_model = review_model
+        self._language = language
+        self._max_iterations = max_iterations
+        self._verbose = verbose
         
-        # Initial code generation
-        if verbose:
+        # Initialize agents
+        parser = ContentParser()
+        self._generator = CodeGeneratorAgent(gen_model, parser=parser)
+        self._reviewer = CodeReviewerAgent(review_model, language=language)
+    
+    def generate_code(self, prompt: str, n: int = 1, declaration: str = None, entry_point: str = None) -> List[str]:
+        """
+        Generate code using the multi-agent approach
+        
+        Args:
+            prompt: The prompt to generate code from
+            n: Number of completions to generate (not fully supported, will generate one high-quality solution)
+            declaration: The function declaration (if None, will try to parse from prompt)
+            entry_point: The function name / entry point (if None, will try to parse from declaration)
+            
+        Returns:
+            List containing the generated code completion
+        """
+        # Parse the prompt to extract declaration and entry point if not provided
+        if declaration is None or entry_point is None:
+            parsed_decl, parsed_entry = self._parse_prompt(prompt)
+            declaration = declaration or parsed_decl
+            entry_point = entry_point or parsed_entry
+        
+        if self._verbose:
             print("\n" + termcolor.colored("GENERATING INITIAL CODE...", "cyan", attrs=["bold"]))
+            print(f"Entry point: {entry_point}")
             
-        declaration = sample["declaration"]
-        entry_point = sample["entry_point"]
-        
         # Generate the initial code
-        raw_code, parsed_code = generator.generate(prompt, entry_point)
+        raw_code, parsed_code = self._generator.generate(prompt, entry_point)
         
-        if verbose:
+        if self._verbose:
             print("\n" + termcolor.colored("GENERATOR RAW OUTPUT:", "yellow", attrs=["bold"]))
             print("-" * 40)
             print(raw_code)
@@ -442,35 +451,19 @@ def run_multi_agent_generation(
             print(parsed_code)
             print("-" * 40)
         
-        # Track iterations
-        iterations = []
-        iterations.append({
-            "iteration": 0,
-            "raw_code": raw_code,
-            "parsed_code": parsed_code,
-            "feedback": None,
-            "review_details": None,
-            "success": False
-        })
-        
         # Use the parsed code for review
         code = parsed_code
         
         # Refinement loop
         success = False
-        for i in range(max_iterations):
-            if verbose:
-                print(f"\n" + termcolor.colored(f"REVIEW ITERATION {i+1}/{max_iterations}...", "cyan", attrs=["bold"]))
+        for i in range(self._max_iterations):
+            if self._verbose:
+                print(f"\n" + termcolor.colored(f"REVIEW ITERATION {i+1}/{self._max_iterations}...", "cyan", attrs=["bold"]))
                 
             # Review the code
-            success, feedback, review_details = reviewer.review(declaration, code, entry_point)
+            success, feedback, review_details = self._reviewer.review(prompt, declaration, code, entry_point)
             
-            # Record this iteration
-            iterations[i]["feedback"] = feedback
-            iterations[i]["review_details"] = review_details
-            iterations[i]["success"] = success
-            
-            if verbose:
+            if self._verbose:
                 print("\n" + termcolor.colored("REVIEWER OUTPUT:", "yellow", attrs=["bold"]))
                 print("-" * 40)
                 print(feedback)
@@ -495,17 +488,17 @@ def run_multi_agent_generation(
                         print("-" * 40)
             
             if success:
-                if verbose:
+                if self._verbose:
                     print("\n" + termcolor.colored("CODE PASSED ALL REVIEWS!", "green", attrs=["bold"]))
                 break
                 
-            if verbose:
+            if self._verbose:
                 print("\n" + termcolor.colored("REFINING CODE...", "cyan", attrs=["bold"]))
                 
             # Refine the code based on feedback
-            raw_new_code, parsed_new_code = generator.refine(prompt, code, feedback, entry_point)
+            raw_new_code, parsed_new_code = self._generator.refine(prompt, code, feedback, entry_point)
             
-            if verbose:
+            if self._verbose:
                 print("\n" + termcolor.colored("REFINED CODE (RAW):", "yellow", attrs=["bold"]))
                 print("-" * 40)
                 print(raw_new_code)
@@ -517,21 +510,141 @@ def run_multi_agent_generation(
             
             # Check if the parsed code has changed
             if parsed_new_code == code:
-                if verbose:
+                if self._verbose:
                     print("\n" + termcolor.colored("CODE DIDN'T CHANGE AFTER REFINEMENT. STOPPING ITERATIONS.", "red", attrs=["bold"]))
                 break
                 
             code = parsed_new_code
+        
+        # Return the final code (repeat if n > 1, though this isn't optimal)
+        return [code] * n
+    
+    def _parse_prompt(self, prompt: str) -> Tuple[str, str]:
+        """
+        Parse the prompt to extract declaration and entry point
+        
+        Args:
+            prompt: The prompt text
             
-            # Record the new iteration
-            iterations.append({
-                "iteration": i+1,
-                "raw_code": raw_new_code,
-                "parsed_code": parsed_new_code,
-                "feedback": None,
-                "review_details": None,
-                "success": False
-            })
+        Returns:
+            Tuple of (declaration, entry_point)
+        """
+        # Extract the declaration from the prompt
+        declaration_match = re.search(r'declaration:\s*(.+?)(?=\n\n|\Z)', prompt, re.DOTALL | re.IGNORECASE)
+        if not declaration_match:
+            # Try an alternative pattern if the first one fails
+            declaration_match = re.search(r'according to this declaration:\s*(.+?)(?=\n\n|\Z)', prompt, re.DOTALL | re.IGNORECASE)
+        
+        declaration = declaration_match.group(1).strip() if declaration_match else ""
+        
+        # Extract or guess the entry point
+        entry_point_match = re.search(r'fn\s+([a-zA-Z0-9_]+)\s*\(', declaration)
+        entry_point = entry_point_match.group(1) if entry_point_match else "solution"
+        
+        return declaration, entry_point
+    
+    @property
+    def model_name(self) -> str:
+        return f"MultiAgent({self._gen_model.model_name}+{self._review_model.model_name})"
+
+
+def run_multi_agent_generation(
+    language: str,
+    gen_model: CodeGenerationModel,
+    review_model: CodeGenerationModel,
+    samples: List[Dict[str, Any]],
+    max_iterations: int = 3,
+    verbose: bool = False,
+    limit: Optional[int] = None,
+    skip_review: bool = False
+) -> List[Dict[str, Any]]:
+    """
+    Run the multi-agent generation process on the provided samples
+    
+    Args:
+        language: Programming language
+        gen_model: Model for code generation
+        review_model: Model for code review
+        samples: List of samples to process
+        max_iterations: Maximum number of refinement iterations
+        verbose: Whether to print detailed logs
+        limit: Optional limit on the number of samples to process
+        skip_review: Whether to skip code review
+        
+    Returns:
+        List of processed samples with results
+    """
+    # Check if cargo is available (for Rust)
+    cargo_available = True
+    if language == "rust" and not skip_review:
+        try:
+            # Try to create a reviewer to check if cargo is available
+            CodeReviewerAgent(review_model, language=language)
+        except FileNotFoundError as e:
+            cargo_available = False
+            print(f"Warning: {str(e)}")
+            print("Running in code generation only mode (no compilation or testing)")
+    
+    # Create multi-agent model
+    multi_agent = MultiAgentModel(
+        gen_model=gen_model,
+        review_model=review_model,
+        language=language,
+        max_iterations=max_iterations if cargo_available else 1,  # No iterations if cargo not available
+        verbose=verbose
+    )
+    
+    processed_samples = []
+    
+    # Process each sample
+    for idx, sample in enumerate(tqdm(samples)):
+        if limit is not None and idx >= limit:
+            break
+            
+        if verbose:
+            print(f"\n{'-'*80}")
+            print(f"Processing sample {idx+1}/{len(samples)}: {sample['task_id']}")
+            print(f"{'-'*80}")
+            
+        # Get the prompt
+        prompt = get_prompt_from_sample(sample, language)
+        
+        # Get declaration and entry_point directly from the sample
+        declaration = sample["declaration"]
+        entry_point = sample["entry_point"]
+        
+        # Initialize agents for tracking iterations (needed for backward compatibility)
+        parser = ContentParser()
+        generator = CodeGeneratorAgent(gen_model, parser=parser)
+        
+        # Generate initial code for iteration tracking
+        raw_code, parsed_code = generator.generate(prompt, entry_point)
+        
+        # Generate code using multi-agent model with explicit declaration and entry_point
+        final_code = multi_agent.generate_code(
+            prompt, 
+            declaration=declaration, 
+            entry_point=entry_point
+        )[0]
+        
+        # Review the final code (if cargo is available)
+        if cargo_available:
+            reviewer = CodeReviewerAgent(review_model, language=language)
+            success, feedback, review_details = reviewer.review(prompt, declaration, final_code, entry_point)
+        else:
+            success = None
+            feedback = "Code review skipped (cargo not available)"
+            review_details = {"error": "Code review skipped (cargo not available)"}
+        
+        # Create a single iteration for compatibility
+        iterations = [{
+            "iteration": 0,
+            "raw_code": raw_code,
+            "parsed_code": parsed_code,
+            "feedback": feedback,
+            "review_details": review_details,
+            "success": success
+        }]
         
         # Store results
         result = {
@@ -540,15 +653,12 @@ def run_multi_agent_generation(
             "declaration": declaration,
             "prompt": prompt,
             "iterations": iterations,
-            "final_code": code,
+            "final_code": final_code,
             "success": success,
             "canonical_solution": sample.get("canonical_solution", "")
         }
         
         processed_samples.append(result)
-        
-    # Clean up
-    reviewer.cleanup()
     
     return processed_samples
 
@@ -561,12 +671,12 @@ if __name__ == "__main__":
     parser.add_argument("--gen_model_type", type=str, default="lambdalabs",
                         choices=["openai", "lambdalabs"],
                         help="Model type for code generation")
-    parser.add_argument("--gen_model_name", type=str, default="llama3-8b-instruct",
+    parser.add_argument("--gen_model_name", type=str, default="llama3.3-70b-instruct-fp8",
                         help="Model name for code generation")
-    parser.add_argument("--review_model_type", type=str, default="openai",
+    parser.add_argument("--review_model_type", type=str, default="lambdalabs",
                         choices=["openai", "lambdalabs"],
                         help="Model type for code review")
-    parser.add_argument("--review_model_name", type=str, default="gpt-4-turbo",
+    parser.add_argument("--review_model_name", type=str, default="llama3.3-70b-instruct-fp8",
                         help="Model name for code review")
     parser.add_argument("--temperature", type=float, default=0.2,
                         help="Temperature parameter for generation")
@@ -580,6 +690,10 @@ if __name__ == "__main__":
                         help="Limit the number of samples to process")
     parser.add_argument("--verbose", action="store_true",
                         help="Print detailed logs")
+    parser.add_argument("--use_multi_agent", action="store_true", default=True,
+                        help="Use the MultiAgentModel class instead of the legacy implementation")
+    parser.add_argument("--skip_review", action="store_true", default=False,
+                        help="Skip code review")
                         
     args = parser.parse_args()
     
@@ -614,16 +728,72 @@ if __name__ == "__main__":
     samples = [s for s in load_dataset("bigcode/humanevalpack", args.language)["test"]]
     print(f"Loaded {len(samples)} samples from HumanEvalPack {args.language} dataset")
     
-    # Run multi-agent generation
-    results = run_multi_agent_generation(
-        language=args.language,
-        gen_model=gen_model,
-        review_model=review_model,
-        samples=samples,
-        max_iterations=args.max_iterations,
-        verbose=args.verbose,
-        limit=args.limit
-    )
+    if args.use_multi_agent:
+        # Create the multi-agent model
+        multi_agent = MultiAgentModel(
+            gen_model=gen_model,
+            review_model=review_model,
+            language=args.language,
+            max_iterations=args.max_iterations,
+            verbose=args.verbose
+        )
+        
+        print(f"Using multi-agent model: {multi_agent.model_name}")
+        
+        # Process each sample
+        results = []
+        
+        for idx, sample in enumerate(tqdm(samples)):
+            if args.limit is not None and idx >= args.limit:
+                break
+                
+            if args.verbose:
+                print(f"\n{'-'*80}")
+                print(f"Processing sample {idx+1}/{len(samples)}: {sample['task_id']}")
+                print(f"{'-'*80}")
+                
+            # Get the prompt
+            prompt = get_prompt_from_sample(sample, args.language)
+            
+            # Get declaration and entry_point directly from the sample
+            declaration = sample["declaration"]
+            entry_point = sample["entry_point"]
+            
+            # Generate code using multi-agent model with explicit declaration and entry_point
+            code = multi_agent.generate_code(
+                prompt, 
+                declaration=declaration, 
+                entry_point=entry_point
+            )[0]
+            
+            # Store results with minimal tracking
+            result = {
+                "task_id": sample["task_id"],
+                "entry_point": entry_point,
+                "declaration": declaration,
+                "prompt": prompt,
+                "final_code": code,
+                "canonical_solution": sample.get("canonical_solution", "")
+            }
+            
+            # We need to determine success
+            reviewer = CodeReviewerAgent(review_model, language=args.language)
+            success, _, _ = reviewer.review(prompt, sample["declaration"], code, sample["entry_point"])
+            result["success"] = success
+            
+            results.append(result)
+    else:
+        # Run legacy multi-agent generation
+        results = run_multi_agent_generation(
+            language=args.language,
+            gen_model=gen_model,
+            review_model=review_model,
+            samples=samples,
+            max_iterations=args.max_iterations,
+            verbose=args.verbose,
+            limit=args.limit,
+            skip_review=args.skip_review
+        )
     
     # Save results
     output_file = args.output_file or f"multi_agent_results_{args.language}.jsonl"

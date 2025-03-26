@@ -71,10 +71,25 @@ class ContentParser:
             content = "\n".join(cleaned_lines)
 
         if "```" in content:
-            content = content.split("```")[1]
+            content = content.split("```rust")[1].split("```")[0]
 
-        if "fn main()" in content:
-            content = content.split("fn main()")[0]
+        # if main function is after the entry point, remove it
+        # Check for main function in different formats
+        main_patterns = [
+            "fn main() {",
+            "fn main(){",
+            "fn main() {\n",
+            "fn main(){\n"
+        ]
+        
+        for pattern in main_patterns:
+            if pattern in content and entry_point in content:
+                # If main appears after the entry point, remove it and everything after
+                entry_pos = content.find(entry_point)
+                main_pos = content.find(pattern)
+                if main_pos > entry_pos:
+                    content = content[:main_pos]
+
         # first parse with assumption that content has description
         matcher = CSequenceMatcher(None, prompt, content)
         tag, _, _, j1, j2 = matcher.get_opcodes()[-1]
