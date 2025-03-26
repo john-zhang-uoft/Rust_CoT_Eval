@@ -122,10 +122,11 @@ The function name should remain '{entry_point}'.
 class CodeReviewerAgent:
     """Agent that reviews code, tests it, and provides feedback"""
     
-    def __init__(self, model: CodeGenerationModel, language: str = "rust", timeout: int = DEFAULT_TIMEOUT):
+    def __init__(self, model: CodeGenerationModel, language: str = "rust", timeout: int = DEFAULT_TIMEOUT, thread_id: Optional[int] = None):
         self.model = model
         self.language = language
         self.timeout = timeout
+        self.thread_id = thread_id or os.getpid()  # Use process ID as default thread ID
         
         # Get absolute path to project root (where this script is located)
         self.project_root = os.path.dirname(os.path.abspath(__file__))
@@ -133,17 +134,27 @@ class CodeReviewerAgent:
         # Set up paths for Rust project
         if language == "rust":
             self.rust_dir = os.path.join(self.project_root, "rust")
-            self.rust_src = os.path.join(self.rust_dir, "src")
+            
+            # Create a unique directory for this thread to avoid conflicts
+            self.thread_rust_dir = os.path.join(self.rust_dir, f"thread_{self.thread_id}")
+            self.rust_src = os.path.join(self.thread_rust_dir, "src")
             self.rust_bin = os.path.join(self.rust_src, "bin")
             
             # Create src/bin directory if it doesn't exist
             os.makedirs(self.rust_bin, exist_ok=True)
             
-            # Check if Cargo.toml exists
-            if not os.path.exists(os.path.join(self.rust_dir, "Cargo.toml")):
+            # Check if base Cargo.toml exists
+            base_cargo_toml = os.path.join(self.rust_dir, "Cargo.toml")
+            if not os.path.exists(base_cargo_toml):
                 raise FileNotFoundError(f"Cargo.toml not found in {self.rust_dir}")
+            
+            # Copy Cargo.toml to thread directory if it doesn't exist
+            thread_cargo_toml = os.path.join(self.thread_rust_dir, "Cargo.toml")
+            if not os.path.exists(thread_cargo_toml):
+                import shutil
+                shutil.copy2(base_cargo_toml, thread_cargo_toml)
                 
-            print(f"Using Rust project at: {self.rust_dir}")
+            print(f"Using Rust project at: {self.thread_rust_dir}")
     
     def review(self, prompt: str, declaration: str, implementation: str, entry_point: str) -> Tuple[bool, str, Dict[str, Any]]:
         """
@@ -194,7 +205,7 @@ class CodeReviewerAgent:
         start_time = time.time()
         
         # Create a unique file name based on the entry point
-        file_prefix = entry_point.lower().replace("/", "_")
+        file_prefix = f"{entry_point.lower().replace('/', '_')}_{self.thread_id}"
         file_name = f"{file_prefix}.rs"
         file_path = os.path.join(self.rust_bin, file_name)
         
@@ -207,7 +218,7 @@ class CodeReviewerAgent:
         try:
             process = subprocess.run(
                 ["cargo", "check", "--bin", file_prefix],
-                cwd=self.rust_dir,
+                cwd=self.thread_rust_dir,  # Use thread-specific directory
                 capture_output=True,
                 text=True,
                 timeout=self.timeout  # Use instance timeout
@@ -316,7 +327,7 @@ Only write the tests, not the implementation code. Make sure the tests will run 
         start_time = time.time()
         
         # Create a unique file name based on the entry point
-        file_prefix = entry_point.lower().replace("/", "_")
+        file_prefix = f"{entry_point.lower().replace('/', '_')}_{self.thread_id}"
         file_name = f"{file_prefix}.rs"
         file_path = os.path.join(self.rust_bin, file_name)
         
@@ -329,7 +340,7 @@ Only write the tests, not the implementation code. Make sure the tests will run 
         try:
             process = subprocess.run(
                 ["cargo", "test", "--bin", file_prefix],
-                cwd=self.rust_dir,
+                cwd=self.thread_rust_dir,  # Use thread-specific directory
                 capture_output=True,
                 text=True,
                 timeout=self.timeout  # Use instance timeout 
@@ -402,8 +413,14 @@ Provide a detailed analysis that would help someone fix the issues.
     
     def cleanup(self):
         """Cleanup temporary files if needed"""
-        # We're using the existing rust project, so no cleanup needed
-        pass
+        if self.language == "rust" and hasattr(self, 'thread_rust_dir') and os.path.exists(self.thread_rust_dir):
+            import shutil
+            try:
+                shutil.rmtree(self.thread_rust_dir)
+                print(f"Cleaned up temporary directory: {self.thread_rust_dir}")
+            except Exception as e:
+                print(f"Warning: Failed to clean up {self.thread_rust_dir}: {str(e)}")
+                # Don't raise the exception, just log it
 
 
 def create_model(model_type: str, model_name: str, temperature: float, top_p: float) -> CodeGenerationModel:
@@ -439,7 +456,8 @@ class MultiAgentModel(CodeGenerationModel):
         language: str = "rust",
         max_iterations: int = 3,
         verbose: bool = False,
-        timeout: int = DEFAULT_TIMEOUT
+        timeout: int = DEFAULT_TIMEOUT,
+        thread_id: Optional[int] = None
     ):
         """
         Initialize a multi-agent model
@@ -451,6 +469,7 @@ class MultiAgentModel(CodeGenerationModel):
             max_iterations: Maximum number of refinement iterations
             verbose: Whether to print detailed logs
             timeout: Timeout for subprocess calls in seconds
+            thread_id: Optional thread ID to use for this model
         """
         self._gen_model = gen_model
         self._review_model = review_model
@@ -458,11 +477,12 @@ class MultiAgentModel(CodeGenerationModel):
         self._max_iterations = max_iterations
         self._verbose = verbose
         self._timeout = timeout
+        self._thread_id = thread_id
         
         # Initialize agents
         parser = ContentParser()
         self._generator = CodeGeneratorAgent(gen_model, parser=parser)
-        self._reviewer = CodeReviewerAgent(review_model, language=language, timeout=timeout)
+        self._reviewer = CodeReviewerAgent(review_model, language=language, timeout=timeout, thread_id=thread_id)
     
     def generate_code(self, prompt: str, n: int = 1, declaration: str = None, entry_point: str = None) -> List[str]:
         """
@@ -688,7 +708,8 @@ def create_multi_agent_model(
     max_iterations: int,
     verbose: bool,
     skip_review: bool = False,
-    timeout: int = DEFAULT_TIMEOUT
+    timeout: int = DEFAULT_TIMEOUT,
+    thread_id: Optional[int] = None
 ) -> MultiAgentModel:
     """
     Create a MultiAgentModel with specified generation and review models
@@ -705,6 +726,7 @@ def create_multi_agent_model(
         verbose: Whether to print detailed logs
         skip_review: Whether to skip code review when cargo/compiler is not available
         timeout: Timeout for subprocess calls in seconds
+        thread_id: Optional thread ID to use for this model
         
     Returns:
         A MultiAgentModel instance
@@ -724,15 +746,16 @@ def create_multi_agent_model(
         top_p
     )
     
-    print(f"Using generator model: {gen_model.model_name}")
-    print(f"Using reviewer model: {review_model.model_name}")
+    if verbose:
+        print(f"Using generator model: {gen_model.model_name}")
+        print(f"Using reviewer model: {review_model.model_name}")
     
     # Check if cargo is available (for Rust)
     cargo_available = True
     if language == "rust" and not skip_review:
         try:
             # Try to create a reviewer to check if cargo is available
-            CodeReviewerAgent(review_model, language=language, timeout=timeout)
+            CodeReviewerAgent(review_model, language=language, timeout=timeout, thread_id=thread_id)
         except FileNotFoundError as e:
             cargo_available = False
             print(f"Warning: {str(e)}")
@@ -748,10 +771,12 @@ def create_multi_agent_model(
         language=language,
         max_iterations=max_iterations if cargo_available else 1,
         verbose=verbose,
-        timeout=timeout
+        timeout=timeout,
+        thread_id=thread_id
     )
     
-    print(f"Using multi-agent model: {multi_agent.model_name}")
+    if verbose:
+        print(f"Using multi-agent model: {multi_agent.model_name}")
     return multi_agent
 
 

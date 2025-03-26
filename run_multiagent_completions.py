@@ -39,7 +39,8 @@ def create_multi_agent_model(
     max_iterations: int,
     verbose: bool,
     skip_review: bool = False,
-    timeout: int = 60
+    timeout: int = 60,
+    thread_id: Optional[int] = None
 ) -> MultiAgentModel:
     """
     Create a MultiAgentModel with specified generation and review models
@@ -56,6 +57,7 @@ def create_multi_agent_model(
         verbose: Whether to print detailed logs
         skip_review: Whether to skip code review when cargo/compiler is not available
         timeout: Timeout in seconds for subprocess calls (compilation/test execution)
+        thread_id: Unique identifier for the thread
         
     Returns:
         A MultiAgentModel instance
@@ -120,7 +122,8 @@ def run_multi_agent_completions(
     verbose: bool = False,
     output_file: Optional[str] = None,
     skip_review: bool = False,
-    timeout: int = 60
+    timeout: int = 60,
+    max_workers: int = 16
 ) -> None:
     """
     Run multi-agent code generation on HumanEval tasks
@@ -141,6 +144,7 @@ def run_multi_agent_completions(
         output_file: Custom output file path (if None, a default is used)
         skip_review: Whether to skip code review when cargo/compiler is not available
         timeout: Timeout in seconds for subprocess calls (compilation/test execution)
+        max_workers: Maximum number of concurrent workers
     """
     # Create the multi-agent model
     multi_agent = create_multi_agent_model(
@@ -163,84 +167,174 @@ def run_multi_agent_completions(
     
     # Run generate_completions with the multi-agent model
     print(f"Running multi-agent generation on {task} for {language}")
-    print(f"Settings: samples={samples_per_problem}, temperature={temperature}, top_p={top_p}, max_iterations={max_iterations}, timeout={timeout}s")
+    print(f"Settings: samples={samples_per_problem}, temperature={temperature}, top_p={top_p}, max_iterations={max_iterations}, timeout={timeout}s, max_workers={max_workers}")
+    print(f"Using concurrent processing with {max_workers} workers")
     
-    # Custom function to run generate_completions that passes declaration and entry_point
+    # Import required modules
     from datasets import load_dataset
     from content_parser import ContentParser, ParseError
     from tqdm import tqdm
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
     
     # Load the dataset
     samples = [s for s in load_dataset("bigcode/humanevalpack", language)["test"]]
     print(f"Loaded {len(samples)} samples from HumanEvalPack {language} dataset")
     
+    # Limit samples if specified
+    if limit is not None:
+        samples = samples[:limit]
+    
     # Initialize parser
     parser = ContentParser()
-    parse_errors = 0
     
-    # Process each sample with explicit declaration and entry_point
-    for idx, sample in enumerate(tqdm(samples)):
-        if limit is not None and idx >= limit:
-            break
+    # Create a thread-safe counter for parse errors
+    parse_errors = 0
+    parse_lock = threading.Lock()
+    
+    # Create a thread-safe list for processed samples
+    processed_samples = []
+    samples_lock = threading.Lock()
+    
+    # Create a thread-safe tqdm progress bar
+    progress_bar = tqdm(total=len(samples))
+    
+    # Create a thread-local storage for parsers (one per thread)
+    thread_local = threading.local()
+    
+    # Function to get a thread-local ContentParser
+    def get_parser():
+        if not hasattr(thread_local, "parser"):
+            thread_local.parser = ContentParser()
+        return thread_local.parser
+    
+    # Function to process a single sample
+    def process_sample(idx, sample):
+        nonlocal parse_errors
+        
+        # Create a thread ID based on the sample index for unique file paths
+        thread_id = idx + 1000  # Offset to avoid potential conflicts with process IDs
+        local_multi_agent = None
+        
+        try:
+            # Get thread-local parser
+            local_parser = get_parser()
             
-        # Get the appropriate prompt based on the task
-        if task == "humanevalfix":
-            prompt = get_prompt_fix(sample, language=language, mode="tests")
-        elif task == "humanevalsynthesize":
-            prompt = get_prompt_synthesize(sample, language=language)
-        elif task == "humanevalexplaindescribe":
-            prompt, docstring_len = get_prompt_explain_desc(sample, language=language)
-            gen = multi_agent.generate_code(
+            # Create a thread-local MultiAgentModel instance
+            local_multi_agent = create_multi_agent_model(
+                gen_model_type=gen_model_type,
+                gen_model_name=gen_model_name,
+                review_model_type=review_model_type,
+                review_model_name=review_model_name,
+                temperature=temperature,
+                top_p=top_p,
+                language=language,
+                max_iterations=max_iterations,
+                verbose=verbose and idx % max_workers == 0,  # Only enable verbose for some threads to avoid output mess
+                skip_review=skip_review,
+                timeout=timeout,
+                thread_id=thread_id
+            )
+            
+            # Get the appropriate prompt based on the task
+            if task == "humanevalfix":
+                prompt = get_prompt_fix(sample, language=language, mode="tests")
+            elif task == "humanevalsynthesize":
+                prompt = get_prompt_synthesize(sample, language=language)
+            elif task == "humanevalexplaindescribe":
+                prompt, docstring_len = get_prompt_explain_desc(sample, language=language)
+                gen = local_multi_agent.generate_code(
+                    prompt, 
+                    samples_per_problem,
+                    declaration=sample["declaration"],
+                    entry_point=sample["entry_point"]
+                )
+                sample["raw_generation"] = gen
+                sample["generation"] = [gen_item[:docstring_len] for gen_item in gen]
+                return sample  # Return early for this special case
+            elif task == "humanevalexplainsynthesize":
+                with jsonlines.open(f"completions_{language}_humanevalexplaindescribe.jsonl", "r") as f:
+                    descriptions = [line["raw_generation"][0] for line in f]
+                desc = descriptions[idx]
+                prompt = get_prompt_explain_syn(sample, desc, language=language)
+            else:
+                raise ValueError(f"Unknown task: {task}")
+                
+            if verbose:
+                print(f"Processing {sample['task_id']} ({idx + 1}/{len(samples)})...")
+                
+            # Generate solutions with explicit declaration and entry_point
+            sample["raw_generation"] = local_multi_agent.generate_code(
                 prompt, 
                 samples_per_problem,
                 declaration=sample["declaration"],
                 entry_point=sample["entry_point"]
             )
-            sample["raw_generation"] = gen
-            sample["generation"] = [gen_item[:docstring_len] for gen_item in gen]
-            continue  # Skip the normal parsing for this task
-        elif task == "humanevalexplainsynthesize":
-            with jsonlines.open(f"completions_{language}_humanevalexplaindescribe.jsonl", "r") as f:
-                descriptions = [line["raw_generation"][0] for line in f]
-            desc = descriptions[idx]
-            prompt = get_prompt_explain_syn(sample, desc, language=language)
-        else:
-            raise ValueError(f"Unknown task: {task}")
             
-        if verbose:
-            print(f"Processing {sample['task_id']} ({idx + 1}/{len(samples)})...")
+            # Parse the generated solutions
+            try:
+                sample["generation"] = [
+                    local_parser(prompt, generation_item, sample["entry_point"]) 
+                    for generation_item in sample["raw_generation"]
+                ]
+            except ParseError as e:
+                with parse_lock:
+                    parse_errors += 1
+                print(f"PARSE EXCEPTION for {sample['task_id']}: {e}")
+                sample["generation"] = [""] * samples_per_problem
+                
+            # Print details if verbose
+            if verbose:
+                for i in range(samples_per_problem):
+                    print(f"\nTask: {sample['task_id']}")
+                    print(f"Entry point: {sample['entry_point']}")
+                    print("-" * 40)
+                    print("Raw generation:")
+                    print(sample["raw_generation"][i])
+                    print("-" * 40)
+                    print("Parsed generation:")
+                    print(sample["generation"][i])
+                    print("-" * 40)
             
-        # Generate solutions with explicit declaration and entry_point
-        sample["raw_generation"] = multi_agent.generate_code(
-            prompt, 
-            samples_per_problem,
-            declaration=sample["declaration"],
-            entry_point=sample["entry_point"]
-        )
+            return sample
+        except Exception as e:
+            import traceback
+            print(f"Error processing sample {sample['task_id']}: {str(e)}")
+            traceback.print_exc()
+            # Return the sample with an error field
+            sample["error"] = str(e)
+            return sample
+        finally:
+            # Clean up thread-specific resources
+            if local_multi_agent and hasattr(local_multi_agent, '_reviewer'):
+                try:
+                    local_multi_agent._reviewer.cleanup()
+                except Exception as e:
+                    print(f"Warning: Failed to clean up resources for sample {sample['task_id']}: {str(e)}")
+            
+            # Update progress bar
+            progress_bar.update(1)
+    
+    # Use ThreadPoolExecutor to process samples concurrently
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks to the executor
+        future_to_idx = {executor.submit(process_sample, idx, sample): idx for idx, sample in enumerate(samples)}
         
-        # Parse the generated solutions
-        try:
-            sample["generation"] = [
-                parser(prompt, generation_item, sample["entry_point"]) 
-                for generation_item in sample["raw_generation"]
-            ]
-        except ParseError as e:
-            parse_errors += 1
-            print(f"PARSE EXCEPTION for {sample['task_id']}: {e}")
-            sample["generation"] = [""] * samples_per_problem
-            
-        # Print details if verbose
-        if verbose:
-            for i in range(samples_per_problem):
-                print(f"\nTask: {sample['task_id']}")
-                print(f"Entry point: {sample['entry_point']}")
-                print("-" * 40)
-                print("Raw generation:")
-                print(sample["raw_generation"][i])
-                print("-" * 40)
-                print("Parsed generation:")
-                print(sample["generation"][i])
-                print("-" * 40)
+        # Process results as they complete
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                result = future.result()
+                with samples_lock:
+                    processed_samples.append(result)
+            except Exception as e:
+                print(f"Sample at index {idx} generated an exception: {str(e)}")
+    
+    # Close progress bar
+    progress_bar.close()
+    
+    # Sort the processed samples by their original index (to maintain order)
+    processed_samples.sort(key=lambda s: samples.index(s))
     
     # Print error rate
     if verbose:
@@ -248,7 +342,7 @@ def run_multi_agent_completions(
     
     # Save results to file  
     with jsonlines.open(output_file, "w") as writer:
-        writer.write_all(samples)
+        writer.write_all(processed_samples)
         
     print(f"Results saved to {output_file}")
 
@@ -291,6 +385,8 @@ if __name__ == "__main__":
                         help="Skip code review when cargo/compiler is not available")
     parser.add_argument("--timeout", type=int, default=60,
                         help="Timeout in seconds for compilation and test execution")
+    parser.add_argument("--max_workers", type=int, default=16,
+                       help="Maximum number of concurrent workers for processing samples")
                         
     args = parser.parse_args()
 
@@ -326,5 +422,6 @@ if __name__ == "__main__":
         verbose=verbose,
         output_file=args.output_file,
         skip_review=args.skip_review,
-        timeout=int(os.getenv("TIMEOUT", args.timeout))
+        timeout=int(os.getenv("TIMEOUT", args.timeout)),
+        max_workers=int(os.getenv("MAX_WORKERS", args.max_workers))
     )
