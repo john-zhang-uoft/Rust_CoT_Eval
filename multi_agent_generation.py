@@ -199,14 +199,14 @@ class CodeReviewerAgent:
         file_path = os.path.join(self.rust_bin, file_name)
         
         # Combine the code and write to a file
-        combined_code = "fn main(){}\n" + declaration + "\n" + implementation
+        combined_code = "#![allow(unused_imports)]\nfn main(){}\n" + declaration + "\n" + implementation
         with open(file_path, "w") as f:
             f.write(combined_code)
         
         # Try to compile with warnings about unused imports suppressed
         try:
             process = subprocess.run(
-                ["cargo", "check", "--bin", file_prefix, "--message-format=json"],
+                ["cargo", "check", "--bin", file_prefix],
                 cwd=self.rust_dir,
                 capture_output=True,
                 text=True,
@@ -219,23 +219,14 @@ class CodeReviewerAgent:
                 "error": "Compilation timed out",
                 "file_path": file_path
             }
-        
-        # Filter out warnings about unused imports from stderr while keeping errors
-        stderr_lines = process.stderr.splitlines()
-        filtered_stderr = []
-        for line in stderr_lines:
-            if "warning: unused import" not in line:
-                filtered_stderr.append(line)
-        
-        filtered_stderr_text = "\n".join(filtered_stderr)
-        
+    
         # Collect details
         details = {
             "duration": time.time() - start_time,
             "command": f"cargo check --bin {file_prefix} --message-format=json",
             "return_code": process.returncode,
             "stdout": process.stdout,
-            "stderr": filtered_stderr_text,
+            "stderr": process.stderr,
             "raw_stderr": process.stderr,
             "file_path": file_path
         }
@@ -251,7 +242,7 @@ rust
 
 
 Compilation error:
-{filtered_stderr_text}
+{process.stderr}
 
 
 Provide a brief explanation of what's wrong and how to fix it. Focus on issues in the implementation, not in the Cargo.toml or other project configuration.
@@ -330,14 +321,14 @@ Only write the tests, not the implementation code. Make sure the tests will run 
         file_path = os.path.join(self.rust_bin, file_name)
         
         # Combine the code with tests and write to a file
-        combined_code = "fn main(){}\n" + declaration + "\n" + implementation + "\n\n" + tests
+        combined_code = "#![allow(unused_imports)]\nfn main(){}\n" + declaration + "\n" + implementation + "\n\n" + tests
         with open(file_path, "w") as f:
             f.write(combined_code)
         
         # Run cargo test with a timeout
         try:
             process = subprocess.run(
-                ["cargo", "test", "--bin", file_prefix, "--message-format=json"],
+                ["cargo", "test", "--bin", file_prefix],
                 cwd=self.rust_dir,
                 capture_output=True,
                 text=True,
@@ -352,29 +343,20 @@ Only write the tests, not the implementation code. Make sure the tests will run 
                 "combined_code": combined_code
             }
         
-        # Filter out warnings about unused imports from stderr while keeping errors
-        stderr_lines = process.stderr.splitlines()
-        filtered_stderr = []
-        for line in stderr_lines:
-            if "warning: unused import" not in line:
-                filtered_stderr.append(line)
-        
-        filtered_stderr_text = "\n".join(filtered_stderr)
-
         # Collect details
         details = {
             "duration": time.time() - start_time,
             "command": f"cargo test --bin {file_prefix}",
             "return_code": process.returncode,
             "stdout": process.stdout,
-            "stderr": filtered_stderr_text,
+            "stderr": process.stderr,
             "combined_code": combined_code,
             "file_path": file_path
         }
         
         if process.returncode != 0:
             # Tests failed
-            return False, process.stdout + "\n" + filtered_stderr_text, details
+            return False, process.stdout + "\n" + process.stderr, details
         
         return True, "All tests passed.", details
     
