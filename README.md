@@ -1,0 +1,1 @@
+##TODO: put the parsing of the output of the generator agent into the review agent class. That way, the review agent can read the raw output of the generator agent AND do the parsing (which is what it should do as the agent anyway). Then also, the output of the generate_completion() function for the multi_agent class can be the raw output.
