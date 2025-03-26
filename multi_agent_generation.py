@@ -529,6 +529,48 @@ class MultiAgentModel(CodeGenerationModel):
         Returns:
             Tuple of (declaration, entry_point)
         """
+        # Handle the Rust-specific prompt structure
+        if self._language == "rust":
+            # Look for any function name after fn main(){} that's not main
+            fn_defs = re.findall(r'fn\s+([a-zA-Z0-9_]+)(?:<[^>]*>)?\s*\(', prompt)
+            fn_defs = [fn_name for fn_name in fn_defs if fn_name != "main"]
+            
+            if fn_defs:
+                # Take the first non-main function as the entry point
+                entry_point = fn_defs[0]
+                
+                # Extract everything after fn main(){} 
+                main_match = re.search(r'fn\s+main\s*\(\s*\)\s*\{\s*\}(.*)', prompt, re.DOTALL)
+                
+                if main_match:
+                    content_after_main = main_match.group(1).strip()
+                    
+                    # Find the complete function signature
+                    fn_signature_match = re.search(fr'fn\s+{entry_point}(?:<[^>]*>)?\s*\([^{{]*', content_after_main, re.DOTALL)
+                    
+                    if fn_signature_match:
+                        # Get the text between fn main(){} and the function signature (likely imports)
+                        imports_match = re.search(fr'(.*?)fn\s+{entry_point}', content_after_main, re.DOTALL)
+                        imports = imports_match.group(1).strip() if imports_match else ""
+                        
+                        # Complete declaration includes imports and function signature
+                        declaration = imports + ("\n" if imports else "") + fn_signature_match.group(0)
+                        
+                        if self._verbose:
+                            print(f"Parsed entry point: {entry_point}")
+                        
+                        return declaration, entry_point
+                
+                # Fallback: just try to get the function signature
+                declaration_match = re.search(fr'(fn\s+{entry_point}(?:<[^>]*>)?\s*\([^{{]*)', prompt, re.DOTALL)
+                declaration = declaration_match.group(1) if declaration_match else ""
+                
+                if self._verbose:
+                    print(f"Fallback parsed entry point: {entry_point}")
+                
+                return declaration, entry_point
+        
+        # Generic approach for non-Rust languages or if Rust-specific parsing failed
         # Extract the declaration from the prompt
         declaration_match = re.search(r'declaration:\s*(.+?)(?=\n\n|\Z)', prompt, re.DOTALL | re.IGNORECASE)
         if not declaration_match:
@@ -538,8 +580,16 @@ class MultiAgentModel(CodeGenerationModel):
         declaration = declaration_match.group(1).strip() if declaration_match else ""
         
         # Extract or guess the entry point
-        entry_point_match = re.search(r'fn\s+([a-zA-Z0-9_]+)\s*\(', declaration)
-        entry_point = entry_point_match.group(1) if entry_point_match else "solution"
+        entry_point_match = re.search(r'fn\s+([a-zA-Z0-9_]+)(?:<[^>]*>)?\s*\(', declaration)
+        if entry_point_match and entry_point_match.group(1) != "main":
+            entry_point = entry_point_match.group(1)
+        else:
+            # Look in the whole prompt if not found in declaration
+            entry_point_match = re.search(r'fn\s+([a-zA-Z0-9_]+)(?:<[^>]*>)?\s*\(', prompt)
+            entry_point = entry_point_match.group(1) if entry_point_match and entry_point_match.group(1) != "main" else "solution"
+        
+        if self._verbose:
+            print(f"Generic parsed entry point: {entry_point}")
         
         return declaration, entry_point
     
