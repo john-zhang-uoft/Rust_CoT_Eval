@@ -22,6 +22,15 @@ class CodeGeneratorAgent:
     def __init__(self, model: CodeGenerationModel, parser: Optional[ContentParser] = None):
         self.model = model
         self.parser = parser
+
+    def _remove_tests(self, code: str) -> str:
+        """
+        Remove test modules from the code to extract only the function implementation.
+        It removes any block starting with #[cfg(test)].
+        """
+        # Remove any content starting with #[cfg(test)] till the end of the string
+        cleaned_code = re.sub(r'(?s)#[\s]*\[cfg\(test\)\].*', '', code)
+        return cleaned_code
     
     def generate(self, prompt: str, entry_point: str) -> Tuple[str, str]:
         """
@@ -33,10 +42,13 @@ class CodeGeneratorAgent:
         results = self.model.generate_code(prompt, n=1)
         raw_response = results[0] if results else ""
         
+        # Remove tests from the generated code before parsing
+        code_for_parsing = self._remove_tests(raw_response)
+        
         # Parse the code if we have a parser
         if self.parser:
             try:
-                parsed_code = self.parser(prompt, raw_response, entry_point)
+                parsed_code = self.parser(prompt, code_for_parsing, entry_point)
                 return raw_response, parsed_code
             except ParseError:
                 print(f"Warning: Failed to parse generated code for {entry_point}")
@@ -53,9 +65,8 @@ class CodeGeneratorAgent:
         """
         refinement_prompt = f"""
 Your previous code:
-```
 {code}
-```
+
 
 Feedback from code review:
 {feedback}
@@ -66,10 +77,13 @@ Please improve your code based on this feedback. Provide only the refined code, 
         results = self.model.generate_code(full_prompt, n=1)
         raw_response = results[0] if results else code  # Return original code if refinement fails
         
+        # Remove tests from the refined code before parsing
+        code_for_parsing = self._remove_tests(raw_response)
+        
         # Parse the code if we have a parser
         if self.parser:
             try:
-                parsed_code = self.parser(prompt, raw_response, entry_point)
+                parsed_code = self.parser(prompt, code_for_parsing, entry_point)
                 return raw_response, parsed_code
             except ParseError:
                 print(f"Warning: Failed to parse refined code for {entry_point}")
@@ -188,14 +202,13 @@ class CodeReviewerAgent:
 Analyze this Rust compilation error and provide a clear, concise explanation of what's wrong and how to fix it:
 
 Code:
-```rust
+rust
 {combined_code}
-```
+
 
 Compilation error:
-```
 {error_output}
-```
+
 
 Provide a brief explanation of what's wrong and how to fix it. Focus on issues in the implementation, not in the Cargo.toml or other project configuration.
 """
@@ -206,6 +219,8 @@ Provide a brief explanation of what's wrong and how to fix it. Focus on issues i
             
             return False, error_analysis, details
         
+        # MODIFIED: Log successful compilation details
+        print(termcolor.colored(f"Compilation succeeded for {file_prefix}.rs in {details['duration']:.2f} seconds.", "green"))
         return True, "Code compiles successfully.", details
     
     def generate_tests(self, declaration: str, implementation: str, entry_point: str) -> Tuple[bool, str, Dict[str, Any]]:
@@ -216,11 +231,11 @@ Provide a brief explanation of what's wrong and how to fix it. Focus on issues i
         test_prompt = f"""
 Write comprehensive unit tests for this Rust function:
 
-```rust
+rust
 {combined_code}
-```
 
-The entry point function name is `{entry_point}`.
+
+The entry point function name is {entry_point}.
 
 Create multiple test cases that thoroughly test the function, including:
 1. Normal cases
@@ -239,6 +254,9 @@ Only write the tests, not the implementation code. Make sure the tests will run 
         }
         
         # Extract the test module
+        raw_test_code = raw_test_code.split("```rust")[1].split("```")[0]
+        print(termcolor.colored(f"Generated tests: {raw_test_code}", "green", attrs=["bold"]))
+
         test_module_match = re.search(r'(#\[cfg\(test\)].+)', raw_test_code, re.DOTALL)
         if test_module_match:
             test_module = test_module_match.group(1)
@@ -301,18 +319,17 @@ Only write the tests, not the implementation code. Make sure the tests will run 
 Analyze why these tests are failing for the given Rust code:
 
 Code:
-```rust
+rust
 {declaration}
 
 {implementation}
 
 {tests}
-```
+
 
 Test output:
-```
 {test_output}
-```
+
 
 Carefully review the code line by line. Identify what's going wrong with the implementation.
 Focus on:
@@ -618,4 +635,4 @@ if __name__ == "__main__":
     # Calculate success rate
     success_count = sum(1 for r in results if r["success"])
     success_rate = success_count / len(results) if results else 0
-    print(f"Success rate: {success_rate:.2%} ({success_count}/{len(results)})") 
+    print(f"Success rate: {success_rate:.2%} ({success_count}/{len(results)})")
