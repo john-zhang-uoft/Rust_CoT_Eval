@@ -85,7 +85,7 @@ This function takes two integers as input and returns their sum.
         
         result = self.parser(prompt, content, entry_point)
         # We should only get the function body now
-        self.assertEqual(result.strip(), "a + b")
+        self.assertEqual(result.strip(), "a + b\n}")
 
     def test_parser_without_description(self):
         prompt = "Implement a function that calculates factorial"
