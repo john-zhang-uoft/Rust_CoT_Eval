@@ -40,7 +40,8 @@ def create_multi_agent_model(
     verbose: bool,
     skip_review: bool = False,
     timeout: int = 60,
-    thread_id: Optional[int] = None
+    thread_id: Optional[int] = None,
+    sample_idx: Optional[int] = None
 ) -> MultiAgentModel:
     """
     Create a MultiAgentModel with specified generation and review models
@@ -58,6 +59,7 @@ def create_multi_agent_model(
         skip_review: Whether to skip code review when cargo/compiler is not available
         timeout: Timeout in seconds for subprocess calls (compilation/test execution)
         thread_id: Unique identifier for the thread
+        sample_idx: Index of the sample for file naming
         
     Returns:
         A MultiAgentModel instance
@@ -174,7 +176,7 @@ def run_multi_agent_completions(
     from datasets import load_dataset
     from content_parser import ContentParser, ParseError
     from tqdm import tqdm
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
     import threading
     
     # Load the dataset
@@ -213,7 +215,8 @@ def run_multi_agent_completions(
         nonlocal parse_errors
         
         # Create a thread ID based on the sample index for unique file paths
-        thread_id = idx + 1000  # Offset to avoid potential conflicts with process IDs
+        # Adding task_id to make thread_id unique across different samples
+        thread_id = idx + 1000 + hash(sample["task_id"]) % 10000  # Offset to avoid potential conflicts with process IDs
         local_multi_agent = None
         
         try:
@@ -231,7 +234,8 @@ def run_multi_agent_completions(
                 verbose=verbose and idx % max_workers == 0,  # Only enable verbose for some threads to avoid output mess
                 skip_review=skip_review,
                 timeout=timeout,
-                thread_id=thread_id
+                thread_id=thread_id,
+                sample_idx=idx  # Pass the sample index for file naming
             )
             
             # Get the appropriate prompt based on the task
@@ -303,15 +307,42 @@ def run_multi_agent_completions(
         # Submit all tasks to the executor
         future_to_idx = {executor.submit(process_sample, idx, sample): idx for idx, sample in enumerate(samples)}
         
-        # Process results as they complete
-        for future in as_completed(future_to_idx):
-            idx = future_to_idx[future]
-            try:
-                result = future.result()
-                with samples_lock:
-                    processed_samples.append(result)
-            except Exception as e:
-                print(f"Sample at index {idx} generated an exception: {str(e)}")
+        try:
+            # Process results as they complete with an overall timeout
+            remaining_futures = list(future_to_idx.keys())
+            while remaining_futures:
+                # Wait for the next result for up to 5 minutes per batch
+                done_futures, remaining_futures = wait(
+                    remaining_futures, 
+                    return_when=FIRST_COMPLETED,
+                    timeout=300  # 5-minute timeout
+                )
+                
+                # Process completed futures
+                for future in done_futures:
+                    idx = future_to_idx[future]
+                    try:
+                        result = future.result(timeout=10)  # 10-second timeout to get the result
+                        with samples_lock:
+                            processed_samples.append(result)
+                    except Exception as e:
+                        print(f"Sample at index {idx} generated an exception: {str(e)}")
+                        
+                # Check if we're making progress
+                if not done_futures and remaining_futures:
+                    print("Warning: No tasks completed in the last 5 minutes. Some tasks may be stuck.")
+                    # Force cancel remaining tasks after a stuck condition is detected
+                    for future in remaining_futures:
+                        future.cancel()
+                    break
+        except KeyboardInterrupt:
+            print("\nKeyboard interrupt received, canceling all pending tasks...")
+            # Cancel all pending futures on keyboard interrupt
+            for future in future_to_idx.keys():
+                if not future.done():
+                    future.cancel()
+            # Let the executor's context manager handle the rest
+            raise
     
     # Close progress bar
     progress_bar.close()

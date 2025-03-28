@@ -48,12 +48,16 @@ class CodeGeneratorAgent(CodeGenerationModel):
         if feedback and code:
             # Handle refinement case
             refinement_prompt = f"""
-You are a Rust programming expert. Your task is to fix the following code based on the feedback provided.
+You are a Rust programming expert. Your task is to solve the following Rust problem by implementing the function.
 
 Original Problem:
+####
 {prompt}
+####
+Do not change the function signature of the function. Do not use any imports that are not already present in the problem description.
 
-Current Implementation:
+You are given an old implementation of the function and feedback on what is wrong with it.
+Old Implementation:
 ```rust
 {code}
 ```
@@ -61,10 +65,10 @@ Current Implementation:
 Feedback from Code Review:
 {feedback}
 
-Please provide an improved version of the code that addresses all the issues mentioned in the feedback.
+Please provide an fixed version of the code that addresses all the issues mentioned in the feedback.
 Only output the complete, corrected function with no additional explanation.
 Do not include tests in your response. Only include the function.
-The function name should remain '{entry_point}'.
+The function name and signature should not change from the original problem.
 """
             return self.model.generate_code(refinement_prompt, n=n)
         else:
@@ -79,11 +83,12 @@ The function name should remain '{entry_point}'.
 class CodeReviewerAgent(CodeGenerationModel):
     """Agent that reviews code, tests it, and provides feedback"""
     
-    def __init__(self, model: CodeGenerationModel, language: str = "rust", timeout: int = DEFAULT_TIMEOUT, thread_id: Optional[int] = None):
+    def __init__(self, model: CodeGenerationModel, language: str = "rust", timeout: int = DEFAULT_TIMEOUT, thread_id: Optional[int] = None, sample_idx: Optional[int] = None):
         self.model = model
         self.language = language
         self.timeout = timeout
         self.thread_id = thread_id or os.getpid()  # Use process ID as default thread ID
+        self.sample_idx = sample_idx  # Store the sample index for file naming
         self._last_details = {}
         self.parser = ContentParser()  # Initialize ContentParser for parsing code
         
@@ -93,27 +98,18 @@ class CodeReviewerAgent(CodeGenerationModel):
         # Set up paths for Rust project
         if language == "rust":
             self.rust_dir = os.path.join(self.project_root, "rust")
-            
-            # Create a unique directory for this thread to avoid conflicts
-            self.thread_rust_dir = os.path.join(self.rust_dir, f"thread_{self.thread_id}")
-            self.rust_src = os.path.join(self.thread_rust_dir, "src")
+            self.rust_src = os.path.join(self.rust_dir, "src")
             self.rust_bin = os.path.join(self.rust_src, "bin")
             
             # Create src/bin directory if it doesn't exist
             os.makedirs(self.rust_bin, exist_ok=True)
             
-            # Check if base Cargo.toml exists
-            base_cargo_toml = os.path.join(self.rust_dir, "Cargo.toml")
-            if not os.path.exists(base_cargo_toml):
+            # Check if Cargo.toml exists
+            cargo_toml = os.path.join(self.rust_dir, "Cargo.toml")
+            if not os.path.exists(cargo_toml):
                 raise FileNotFoundError(f"Cargo.toml not found in {self.rust_dir}")
             
-            # Copy Cargo.toml to thread directory if it doesn't exist
-            thread_cargo_toml = os.path.join(self.thread_rust_dir, "Cargo.toml")
-            if not os.path.exists(thread_cargo_toml):
-                import shutil
-                shutil.copy2(base_cargo_toml, thread_cargo_toml)
-                
-            print(f"Using Rust project at: {self.thread_rust_dir}")
+            print(f"Using Rust project at: {self.rust_dir} with thread ID {self.thread_id}")
             
     def _parse_code(self, raw_code: str, prompt: str, entry_point: str) -> str:
         """
@@ -274,40 +270,41 @@ class CodeReviewerAgent(CodeGenerationModel):
     def check_compilation(self, declaration: str, implementation: str, entry_point: str) -> Tuple[bool, str, Dict[str, Any]]:
         """Check if the code compiles"""
         start_time = time.time()
+        process = None
         
-        # Create a unique file name based on the entry point
-        file_prefix = f"{entry_point.lower().replace('/', '_')}_{self.thread_id}"
-        file_name = f"{file_prefix}.rs"
-        file_path = os.path.join(self.rust_bin, file_name)
-        
-        # Add necessary imports and directives
-        prelude = "#![allow(unused_imports)]\n#![allow(unused_variables)]\n"
-        
-        # Ensure there's a main function for binary compilation
-        has_main = "fn main()" in declaration or "fn main()" in implementation
-        main_fn = "" if has_main else "fn main(){}\n"
-        
-        # Combine the code with proper formatting
-        combined_code = f"{prelude}{main_fn}{declaration}\n{implementation}"
-        
-        # Print the code being compiled
-        print(termcolor.colored(f"\nCOMPILING CODE:", "cyan", attrs=["bold"]))
-        print("-" * 40)
-        print(combined_code)
-        print("-" * 40)
-        
-        # Write to file
-        with open(file_path, "w") as f:
-            f.write(combined_code)
-        
-        # Log what we're compiling
-        print(f"Compiling: {file_path}")
-        
-        # Try to compile with warnings about unused imports suppressed
         try:
+            # Create a unique file name based on the sample index only
+            file_prefix = f"sample_{self.sample_idx}_{self.thread_id}" if self.sample_idx is not None else f"sample_{self.thread_id}"
+            file_name = f"{file_prefix}.rs"
+            file_path = os.path.join(self.rust_bin, file_name)
+            
+            # Add necessary imports and directives
+            prelude = "#![allow(unused_imports)]\n#![allow(unused_variables)]\n"
+            
+            # Ensure there's a main function for binary compilation
+            has_main = "fn main()" in declaration or "fn main()" in implementation
+            main_fn = "" if has_main else "fn main(){}\n"
+            
+            # Combine the code with proper formatting
+            combined_code = f"{prelude}{main_fn}{declaration}\n{implementation}"
+            
+            # Print the code being compiled
+            print(termcolor.colored(f"\nCOMPILING CODE:", "cyan", attrs=["bold"]))
+            print("-" * 40)
+            print(combined_code)
+            print("-" * 40)
+            
+            # Write to file
+            with open(file_path, "w") as f:
+                f.write(combined_code)
+            
+            # Log what we're compiling
+            print(f"Compiling: {file_path}")
+            
+            # Try to compile with warnings about unused imports suppressed
             process = subprocess.run(
                 ["cargo", "check", "--bin", file_prefix],
-                cwd=self.thread_rust_dir,  # Use thread-specific directory
+                cwd=self.rust_dir,  # Use main directory
                 capture_output=True,
                 text=True,
                 timeout=self.timeout  # Use instance timeout
@@ -480,61 +477,66 @@ Do not include any explanations, comments, or markdown formatting in your respon
     def run_tests(self, declaration: str, implementation: str, tests: str, entry_point: str) -> Tuple[bool, str, Dict[str, Any]]:
         """Run the tests and check if they pass"""
         start_time = time.time()
+        file_path = "unknown"
+        file_prefix = "unknown"
+        compile_process = None
+        process = None
+        combined_code = ""
         
-        # Create a unique file name based on the entry point
-        file_prefix = f"{entry_point.lower().replace('/', '_')}_{self.thread_id}"
-        file_name = f"{file_prefix}.rs"
-        file_path = os.path.join(self.rust_bin, file_name)
-        
-        # Add necessary imports and directives for better error handling
-        prelude = "#![allow(unused_imports)]\n#![allow(unused_variables)]\n#![allow(dead_code)]\n"
-        
-        # Ensure there's a main function for binary compilation
-        has_main = "fn main()" in declaration or "fn main()" in implementation
-        main_fn = "" if has_main else "fn main(){}\n"
-        
-        # Verify the test code is valid Rust and contains test functions
-        if "#[test]" not in tests:
-            return False, "Generated test code doesn't contain any test functions.", {
-                "duration": time.time() - start_time,
-                "error": "No test functions found"
-            }
-        
-        # Check for module sanity
-        if not tests.strip().startswith("#[cfg(test)]"):
-            tests = f"#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    {tests}\n}}"
-            print(termcolor.colored(f"Fixed test module wrapper", "yellow"))
-        
-        # Combine the code with proper formatting and tests
-        combined_code = f"{prelude}{main_fn}{declaration}\n{implementation}\n\n{tests}"
-        
-        # Clean up test failures that might cause compiler errors
-        # Make sure braces are balanced in the test code
-        opening_braces = combined_code.count('{')
-        closing_braces = combined_code.count('}')
-        if opening_braces > closing_braces:
-            # Add missing closing braces
-            combined_code += '\n' + '}' * (opening_braces - closing_braces)
-            print(termcolor.colored(f"Fixed {opening_braces - closing_braces} unbalanced braces", "yellow"))
-        
-        # Print the code and tests being run
-        print(termcolor.colored(f"\nRUNNING TESTS ON CODE:", "cyan", attrs=["bold"]))
-        print("-" * 40)
-        print(combined_code)
-        print("-" * 40)
-        
-        # Write to file
-        with open(file_path, "w") as f:
-            f.write(combined_code)
-        
-        # Log what we're testing
-        print(f"Testing: {file_path}")
-        
-        # First compile to check for syntax errors
         try:
+            # Create a unique file name based on the sample index only
+            file_prefix = f"sample_{self.sample_idx}_{self.thread_id}" if self.sample_idx is not None else f"sample_{self.thread_id}"
+            file_name = f"{file_prefix}.rs"
+            file_path = os.path.join(self.rust_bin, file_name)
+            
+            # Add necessary imports and directives for better error handling
+            prelude = "#![allow(unused_imports)]\n#![allow(unused_variables)]\n#![allow(dead_code)]\n"
+            
+            # Ensure there's a main function for binary compilation
+            has_main = "fn main()" in declaration or "fn main()" in implementation
+            main_fn = "" if has_main else "fn main(){}\n"
+            
+            # Verify the test code is valid Rust and contains test functions
+            if "#[test]" not in tests:
+                return False, "Generated test code doesn't contain any test functions.", {
+                    "duration": time.time() - start_time,
+                    "error": "No test functions found"
+                }
+            
+            # Check for module sanity
+            if not tests.strip().startswith("#[cfg(test)]"):
+                tests = f"#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    {tests}\n}}"
+                print(termcolor.colored(f"Fixed test module wrapper", "yellow"))
+            
+            # Combine the code with proper formatting and tests
+            combined_code = f"{prelude}{main_fn}{declaration}\n{implementation}\n\n{tests}"
+            
+            # Clean up test failures that might cause compiler errors
+            # Make sure braces are balanced in the test code
+            opening_braces = combined_code.count('{')
+            closing_braces = combined_code.count('}')
+            if opening_braces > closing_braces:
+                # Add missing closing braces
+                combined_code += '\n' + '}' * (opening_braces - closing_braces)
+                print(termcolor.colored(f"Fixed {opening_braces - closing_braces} unbalanced braces", "yellow"))
+            
+            # Print the code and tests being run
+            print(termcolor.colored(f"\nRUNNING TESTS ON CODE:", "cyan", attrs=["bold"]))
+            print("-" * 40)
+            print(combined_code)
+            print("-" * 40)
+            
+            # Write to file
+            with open(file_path, "w") as f:
+                f.write(combined_code)
+            
+            # Log what we're testing
+            print(f"Testing: {file_path}")
+            
+            # First compile to check for syntax errors
             compile_process = subprocess.run(
                 ["cargo", "check", "--bin", file_prefix],
-                cwd=self.thread_rust_dir,
+                cwd=self.rust_dir,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout  # Use instance timeout
@@ -563,7 +565,7 @@ Do not include any explanations, comments, or markdown formatting in your respon
         try:
             process = subprocess.run(
                 ["cargo", "test", "--bin", file_prefix],
-                cwd=self.thread_rust_dir,  # Use thread-specific directory
+                cwd=self.rust_dir,  # Use main directory
                 capture_output=True,
                 text=True,
                 timeout=self.timeout  # Use instance timeout 
@@ -683,13 +685,24 @@ Your feedback should be specific and focus on fixing the implementation, not the
     
     def cleanup(self):
         """Cleanup temporary files if needed"""
-        if self.language == "rust" and hasattr(self, 'thread_rust_dir') and os.path.exists(self.thread_rust_dir):
-            import shutil
+        if self.language == "rust" and hasattr(self, 'rust_bin') and os.path.exists(self.rust_bin):
             try:
-                shutil.rmtree(self.thread_rust_dir)
-                print(f"Cleaned up temporary directory: {self.thread_rust_dir}")
+                # Only remove the files created for this thread and sample
+                if self.sample_idx is not None:
+                    # Pattern: sample_<idx>_<thread_id>.rs
+                    thread_files = [f for f in os.listdir(self.rust_bin) 
+                                  if f.startswith(f"sample_{self.sample_idx}_{self.thread_id}")]
+                else:
+                    # Fallback to the old pattern if sample_idx is not provided
+                    thread_files = [f for f in os.listdir(self.rust_bin) 
+                                  if f.endswith(f"_{self.thread_id}.rs")]
+                
+                for file_name in thread_files:
+                    file_path = os.path.join(self.rust_bin, file_name)
+                    os.remove(file_path)
+                    print(f"Removed temporary file: {file_path}")
             except Exception as e:
-                print(f"Warning: Failed to clean up {self.thread_rust_dir}: {str(e)}")
+                print(f"Warning: Failed to clean up resources for thread {self.thread_id}: {str(e)}")
                 # Don't raise the exception, just log it
 
     @property
@@ -737,7 +750,8 @@ class MultiAgentModel(CodeGenerationModel):
         max_iterations: int = 3,
         verbose: bool = False,
         timeout: int = DEFAULT_TIMEOUT,
-        thread_id: Optional[int] = None
+        thread_id: Optional[int] = None,
+        sample_idx: Optional[int] = None
     ):
         """
         Initialize a multi-agent model
@@ -750,6 +764,7 @@ class MultiAgentModel(CodeGenerationModel):
             verbose: Whether to print detailed logs
             timeout: Timeout for subprocess calls in seconds
             thread_id: Optional thread ID to use for this model
+            sample_idx: Optional sample index to use for file naming
         """
         self._gen_model = gen_model
         self._review_model = review_model
@@ -758,10 +773,17 @@ class MultiAgentModel(CodeGenerationModel):
         self._verbose = verbose
         self._timeout = timeout
         self._thread_id = thread_id
+        self._sample_idx = sample_idx
         
         # Initialize agents
         self._generator = CodeGeneratorAgent(gen_model)
-        self._reviewer = CodeReviewerAgent(review_model, language=language, timeout=timeout, thread_id=thread_id)
+        self._reviewer = CodeReviewerAgent(
+            review_model, 
+            language=language, 
+            timeout=timeout, 
+            thread_id=thread_id,
+            sample_idx=sample_idx
+        )
     
     def generate_code(self, prompt: str, n: int = 1, declaration: str = None, entry_point: str = None) -> Tuple[List[str], Dict[str, Any]]:
         """
@@ -1074,7 +1096,8 @@ def create_multi_agent_model(
     verbose: bool,
     skip_review: bool = False,
     timeout: int = DEFAULT_TIMEOUT,
-    thread_id: Optional[int] = None
+    thread_id: Optional[int] = None,
+    sample_idx: Optional[int] = None
 ) -> MultiAgentModel:
     """
     Create a MultiAgentModel with specified generation and review models
@@ -1092,6 +1115,7 @@ def create_multi_agent_model(
         skip_review: Whether to skip code review when cargo/compiler is not available
         timeout: Timeout for subprocess calls in seconds
         thread_id: Optional thread ID to use for this model
+        sample_idx: Optional sample index to use for file naming
         
     Returns:
         A MultiAgentModel instance
@@ -1120,7 +1144,7 @@ def create_multi_agent_model(
     if language == "rust" and not skip_review:
         try:
             # Try to create a reviewer to check if cargo is available
-            CodeReviewerAgent(review_model, language=language, timeout=timeout, thread_id=thread_id)
+            CodeReviewerAgent(review_model, language=language, timeout=timeout, thread_id=thread_id, sample_idx=sample_idx)
         except FileNotFoundError as e:
             cargo_available = False
             print(f"Warning: {str(e)}")
@@ -1137,7 +1161,8 @@ def create_multi_agent_model(
         max_iterations=max_iterations if cargo_available else 1,
         verbose=verbose,
         timeout=timeout,
-        thread_id=thread_id
+        thread_id=thread_id,
+        sample_idx=sample_idx
     )
     
     if verbose:
