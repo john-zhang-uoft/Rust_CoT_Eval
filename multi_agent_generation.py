@@ -47,6 +47,17 @@ class CodeGeneratorAgent(CodeGenerationModel):
         
         if feedback and code:
             # Handle refinement case
+            # Try to extract the actual function implementation if the code contains both declaration and implementation
+            function_name = entry_point
+            
+            # Extract just the function implementation if we were given declaration+implementation
+            implementation_only = code
+            # Check if the code contains both declaration and implementation
+            fn_match = re.search(fr'fn\s+{re.escape(function_name)}[^{{]*{{', code)
+            if fn_match:
+                # We have a function definition, so this is likely the combined code
+                implementation_only = code
+            
             refinement_prompt = f"""
 You are a Rust programming expert. Your task is to solve the following Rust problem by implementing the function.
 
@@ -59,13 +70,13 @@ Do not change the function signature of the function. Do not use any imports tha
 You are given an old implementation of the function and feedback on what is wrong with it.
 Old Implementation:
 ```rust
-{code}
+{implementation_only}
 ```
 
 Feedback from Code Review:
 {feedback}
 
-Please provide an fixed version of the code that addresses all the issues mentioned in the feedback.
+Please provide a fixed version of the code that addresses all the issues mentioned in the feedback.
 Only output the complete, corrected function with no additional explanation.
 Do not include tests in your response. Only include the function.
 The function name and signature should not change from the original problem.
@@ -215,6 +226,7 @@ class CodeReviewerAgent(CodeGenerationModel):
         # Store details for later access, ensuring success is directly accessible
         self._last_details = details
         self._last_details["success"] = success
+        self._last_details["implementation"] = implementation
         
         # Return feedback as a list with one item
         return [feedback]
@@ -824,6 +836,7 @@ class MultiAgentModel(CodeGenerationModel):
         # Refinement loop
         success = False
         current_raw_code = raw_code
+        current_implementation = None  # Track the current parsed implementation
         exit_reason = self.EXIT_REASON_MAX_ITERATIONS  # Default exit reason
         iterations_data = []  # Track data for each iteration
         
@@ -845,6 +858,14 @@ class MultiAgentModel(CodeGenerationModel):
                 )
                 feedback = feedback_list[0] if feedback_list else ""
                 review_details = self._reviewer.get_last_details()
+                
+                # Get the parsed implementation used for review
+                # This is what the reviewer actually compiled and tested
+                if "implementation" in review_details:
+                    current_implementation = review_details["implementation"]
+                else:
+                    # If not stored in details, parse it here
+                    current_implementation = self._reviewer._parse_code(current_raw_code, prompt, entry_point)
                 
                 # Get success value from review result
                 try:
@@ -943,11 +964,15 @@ class MultiAgentModel(CodeGenerationModel):
                 
             # Refine the code based on feedback - get new raw code
             try:
+                # Concatenate declaration and implementation for refinement
+                # so the CodeGeneratorAgent gets the complete context
+                combined_code = f"{declaration}\n\n{current_raw_code}"
+                
                 refined_codes = self._generator.generate_code(
                     prompt, 
                     n=1, 
                     entry_point=entry_point, 
-                    code=current_raw_code,  # Use the current raw code 
+                    code=combined_code,  # Use combined declaration + implementation
                     feedback=feedback
                 )
                 
@@ -959,14 +984,24 @@ class MultiAgentModel(CodeGenerationModel):
                     print(new_raw_code)
                     print("-" * 40)
                 
-                # Check if the raw code has changed
-                if new_raw_code == current_raw_code:
+                # Parse the implementation - extract function from the refined code if needed
+                parsed_implementation = self._reviewer._parse_code(new_raw_code, prompt, entry_point)
+                
+                if self._verbose:
+                    print("\n" + termcolor.colored("PARSED REFINED CODE:", "cyan", attrs=["bold"]))
+                    print("-" * 40)
+                    print(parsed_implementation)
+                    print("-" * 40)
+                
+                # Check if the raw code has changed meaningfully
+                if parsed_implementation == current_implementation:
                     if self._verbose or True:  # Always print these, regardless of verbose flag
                         print("\n" + termcolor.colored("CODE DIDN'T CHANGE AFTER REFINEMENT. STOPPING ITERATIONS.", "red", attrs=["bold"]))
                     exit_reason = self.EXIT_REASON_NO_CHANGE
                     break
                 
                 current_raw_code = new_raw_code
+                current_implementation = parsed_implementation
             except Exception as e:
                 # Handle any unexpected errors during refinement
                 error_msg = f"Error during code refinement: {str(e)}"
