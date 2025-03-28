@@ -38,7 +38,7 @@ def evaluate_completions(input_file, k=1, language="rust", verbose=False):
     
     # Process each sample
     for idx, sample in enumerate(tqdm(samples)):
-        if "generation" not in sample or not sample["generation"]:
+        if "raw_generation" not in sample or not sample["raw_generation"][0]:
             if verbose:
                 print(f"Warning: No generation field in sample {idx}")
             results.append({"task_id": sample.get("task_id", f"sample_{idx}"), "results": ["skipped"] * k})
@@ -55,9 +55,9 @@ def evaluate_completions(input_file, k=1, language="rust", verbose=False):
         success = False
         
         # Test up to k generations (but not more than available)
-        generations_to_test = min(k, len(sample["generation"]))
+        generations_to_test = min(k, len(sample["raw_generation"][0]))
         for gen_idx in range(generations_to_test):
-            generation = sample["generation"][gen_idx]
+            generation = sample["raw_generation"][0][gen_idx]
             if not generation:  # Skip empty generations
                 sample_results.append("skipped")
                 continue

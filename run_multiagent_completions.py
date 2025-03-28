@@ -217,8 +217,6 @@ def run_multi_agent_completions(
         local_multi_agent = None
         
         try:
-            # Get thread-local parser
-            local_parser = get_parser()
             
             # Create a thread-local MultiAgentModel instance
             local_multi_agent = create_multi_agent_model(
@@ -271,18 +269,6 @@ def run_multi_agent_completions(
                 entry_point=sample["entry_point"]
             )
             
-            # Parse the generated solutions
-            try:
-                sample["generation"] = [
-                    local_parser(prompt, generation_item, sample["entry_point"]) 
-                    for generation_item in sample["raw_generation"]
-                ]
-            except ParseError as e:
-                with parse_lock:
-                    parse_errors += 1
-                print(f"PARSE EXCEPTION for {sample['task_id']}: {e}")
-                sample["generation"] = [""] * samples_per_problem
-                
             # Print details if verbose
             if verbose:
                 for i in range(samples_per_problem):
@@ -291,9 +277,6 @@ def run_multi_agent_completions(
                     print("-" * 40)
                     print("Raw generation:")
                     print(sample["raw_generation"][i])
-                    print("-" * 40)
-                    print("Parsed generation:")
-                    print(sample["generation"][i])
                     print("-" * 40)
             
             return sample

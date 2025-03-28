@@ -62,7 +62,8 @@ Feedback from Code Review:
 {feedback}
 
 Please provide an improved version of the code that addresses all the issues mentioned in the feedback.
-Only output the complete, corrected code with no additional explanation.
+Only output the complete, corrected function with no additional explanation.
+Do not include tests in your response. Only include the function.
 The function name should remain '{entry_point}'.
 """
             return self.model.generate_code(refinement_prompt, n=n)
@@ -126,6 +127,12 @@ class CodeReviewerAgent(CodeGenerationModel):
         Returns:
             Parsed code
         """
+        # Remove any test modules from the raw code before extraction
+        test_module_index = raw_code.find("#[cfg(test)]")
+        if test_module_index != -1:
+            print(termcolor.colored("Removing test module from code before extraction.", "cyan", attrs=["bold"]))
+            raw_code = raw_code[:test_module_index]
+        
         print(termcolor.colored(f"\nATTEMPTING TO PARSE CODE for {entry_point}:", "cyan", attrs=["bold"]))
         
         # Check if the raw code directly contains the entry point function
@@ -185,7 +192,7 @@ class CodeReviewerAgent(CodeGenerationModel):
             # Last resort: return raw code
             print("All extraction attempts failed. Returning raw code.")
             return raw_code
-            
+
     def generate_code(self, prompt: str, n: int = 1, **kwargs) -> List[str]:
         """
         Review the provided code implementation and return a list with the feedback
@@ -974,7 +981,7 @@ class MultiAgentModel(CodeGenerationModel):
         }
         
         # Return the final code and generation details
-        return [current_raw_code] * n, generation_details
+        return [final_code] * n, generation_details
     
     def _parse_prompt(self, prompt: str) -> Tuple[str, str]:
         """
