@@ -98,8 +98,8 @@ class ContentParser:
 
             i += 1
 
-        # Return only the function body, not including the signature
-        result = script[body_start + 1:i - 1].strip()
+        # Return the function body including the final closing brace
+        result = script[body_start + 1:i].strip()
         print(f"DEBUG - Extracted function body: {result}")
         return result
     
