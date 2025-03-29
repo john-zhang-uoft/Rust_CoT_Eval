@@ -125,7 +125,8 @@ def run_multi_agent_completions(
     output_file: Optional[str] = None,
     skip_review: bool = False,
     timeout: int = 60,
-    max_workers: int = 16
+    max_workers: int = 16,
+    custom_dataset: Optional[List[Dict[str, Any]]] = None
 ) -> None:
     """
     Run multi-agent code generation on HumanEval tasks
@@ -147,6 +148,7 @@ def run_multi_agent_completions(
         skip_review: Whether to skip code review when cargo/compiler is not available
         timeout: Timeout in seconds for subprocess calls (compilation/test execution)
         max_workers: Maximum number of concurrent workers
+        custom_dataset: Optional custom dataset to use instead of HumanEvalPack
     """
     # Create the multi-agent model
     multi_agent = create_multi_agent_model(
@@ -180,8 +182,14 @@ def run_multi_agent_completions(
     import threading
     
     # Load the dataset
-    samples = [s for s in load_dataset("bigcode/humanevalpack", language)["test"]]
-    print(f"Loaded {len(samples)} samples from HumanEvalPack {language} dataset")
+    if custom_dataset is not None:
+        # Use the provided custom dataset
+        samples = custom_dataset
+        print(f"Using custom dataset with {len(samples)} samples")
+    else:
+        # Load from HumanEvalPack
+        samples = [s for s in load_dataset("bigcode/humanevalpack", language)["test"]]
+        print(f"Loaded {len(samples)} samples from HumanEvalPack {language} dataset")
     
     # Limit samples if specified
     if limit is not None:
@@ -259,6 +267,11 @@ def run_multi_agent_completions(
                     descriptions = [line["raw_generation"][0] for line in f]
                 desc = descriptions[idx]
                 prompt = get_prompt_explain_syn(sample, desc, language=language)
+            elif task == "custom":
+                # For custom tasks, use the prompt directly from the sample
+                prompt = sample.get("prompt", "")
+                if not prompt:
+                    raise ValueError(f"Sample {idx} does not have a prompt field")
             else:
                 raise ValueError(f"Unknown task: {task}")
                 
