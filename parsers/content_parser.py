@@ -102,7 +102,7 @@ class ContentParser:
         result = script[body_start + 1:i].strip()
         print(f"DEBUG - Extracted function body: {result}")
         return result
-    
+
 
     def __call__(self, prompt: str, content: str, entry_point: str):
         # NOTE: Model doesn't follow instructions directly:
