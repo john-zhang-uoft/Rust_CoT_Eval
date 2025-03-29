@@ -136,32 +136,23 @@ class RustCodeReviewerAgent(CodeGenerationModel):
         raise NotImplementedError("RustCodeReviewerAgent does not support code generation")
     
     
-    def generate_feedback(self, original_prompt: str, declaration: str, implementation: str, entry_point: str,n: int = 1) -> List[str]:
+    def generate_feedback(self, original_prompt: str, declaration: str, implementation: str, entry_point: str, n: int = 1) -> Tuple[List[str], List[Any], List[bool]]:
         """
         Review the provided code implementation and return a list with the feedback
-        
-        Args:
-            prompt: The problem description/prompt
-            n: Number of feedback to generate (ignored, always returns 1)
-            **kwargs: Additional arguments including declaration, implementation, and entry_point
-            
-        Returns:
-            List containing the feedback
-        """        
+        """
         # Parse the implementation using ContentParser
         implementation = self._parse_code(implementation, original_prompt, entry_point)
         
         feedbacks = []
-        details = []
+        detail_list = []   # Use a separate list variable for review details
         successes = []
 
-        # Review the code
         for i in range(n):
-            success, feedback, details = self.review_rust(original_prompt, declaration, implementation, entry_point)
+            success, feedback, review_detail = self.review_rust(original_prompt, declaration, implementation, entry_point)
             feedbacks.append(feedback)
-            details.append(details)
+            detail_list.append(review_detail)
             successes.append(success)
-        return feedbacks, details, successes
+        return feedbacks, detail_list, successes
 
     def review_rust(self, prompt: str, declaration: str, implementation: str, entry_point: str) -> Tuple[bool, str, Dict[str, Any]]:
         """Review Rust code"""

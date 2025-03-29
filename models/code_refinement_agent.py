@@ -23,7 +23,7 @@ class CodeRefinementAgent(CodeGenerationModel):
         # Handle initial generation case
         return self.model.generate_code(prompt, n=n)
 
-    def refine_code(self, prompt: str, code: str, feedback: str, n: int = 1) -> str:
+    def refine_code(self, prompt: str, code: str, feedback: str, n: int = 1) -> List[str]:
         """
         Refine the code based on the prompt and feedback
         """        
