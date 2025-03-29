@@ -11,22 +11,26 @@ from dotenv import load_dotenv
 from typing import List, Dict, Any, Optional
 import jsonlines
 
-from multi_agent_generation import (
+from models.multi_agent_generation import (
     MultiAgentModel,
     create_model,
-    get_prompt_from_sample,
-    CodeReviewerAgent
 )
+
+from models.rust_code_reviewer_agent import RustCodeReviewerAgent
+
 from generate_completions import (
-    generate_completions,
     LANGUAGE_TO_NAME,
     get_prompt_synthesize,
     get_prompt_fix,
     get_prompt_explain_desc,
     get_prompt_explain_syn
 )
-from code_generation_models import CodeGenerationModel
 
+from datasets import load_dataset
+from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+import threading
+    
 
 def create_multi_agent_model(
     gen_model_type: str,
@@ -41,7 +45,8 @@ def create_multi_agent_model(
     skip_review: bool = False,
     timeout: int = 60,
     thread_id: Optional[int] = None,
-    sample_idx: Optional[int] = None
+    sample_idx: Optional[int] = None,
+    rust_dir: Optional[str] = None
 ) -> MultiAgentModel:
     """
     Create a MultiAgentModel with specified generation and review models
@@ -60,6 +65,7 @@ def create_multi_agent_model(
         timeout: Timeout in seconds for subprocess calls (compilation/test execution)
         thread_id: Unique identifier for the thread
         sample_idx: Index of the sample for file naming
+        rust_dir: Optional custom path to the Rust project directory
         
     Returns:
         A MultiAgentModel instance
@@ -87,7 +93,7 @@ def create_multi_agent_model(
     if language == "rust" and not skip_review:
         try:
             # Try to create a reviewer to check if cargo is available
-            CodeReviewerAgent(review_model, language=language)
+            RustCodeReviewerAgent(review_model, rust_dir=rust_dir)
         except FileNotFoundError as e:
             cargo_available = False
             print(f"Warning: {str(e)}")
@@ -102,7 +108,10 @@ def create_multi_agent_model(
         review_model=review_model,
         language=language,
         max_iterations=max_iterations if cargo_available else 1,
-        verbose=verbose
+        verbose=verbose,
+        rust_dir=rust_dir,
+        thread_id=thread_id,
+        sample_idx=sample_idx
     )
     
     print(f"Using multi-agent model: {multi_agent.model_name}")
@@ -126,7 +135,8 @@ def run_multi_agent_completions(
     skip_review: bool = False,
     timeout: int = 60,
     max_workers: int = 16,
-    custom_dataset: Optional[List[Dict[str, Any]]] = None
+    custom_dataset: Optional[List[Dict[str, Any]]] = None,
+    rust_dir: Optional[str] = None
 ) -> None:
     """
     Run multi-agent code generation on HumanEval tasks
@@ -149,21 +159,8 @@ def run_multi_agent_completions(
         timeout: Timeout in seconds for subprocess calls (compilation/test execution)
         max_workers: Maximum number of concurrent workers
         custom_dataset: Optional custom dataset to use instead of HumanEvalPack
+        rust_dir: Optional custom path to the Rust project directory
     """
-    # Create the multi-agent model
-    multi_agent = create_multi_agent_model(
-        gen_model_type=gen_model_type,
-        gen_model_name=gen_model_name,
-        review_model_type=review_model_type,
-        review_model_name=review_model_name,
-        temperature=temperature,
-        top_p=top_p,
-        language=language,
-        max_iterations=max_iterations,
-        verbose=verbose,
-        skip_review=skip_review,
-        timeout=timeout
-    )
     
     # Set default output file if not provided
     if output_file is None:
@@ -173,13 +170,6 @@ def run_multi_agent_completions(
     print(f"Running multi-agent generation on {task} for {language}")
     print(f"Settings: samples={samples_per_problem}, temperature={temperature}, top_p={top_p}, max_iterations={max_iterations}, timeout={timeout}s, max_workers={max_workers}")
     print(f"Using concurrent processing with {max_workers} workers")
-    
-    # Import required modules
-    from datasets import load_dataset
-    from content_parser import ContentParser, ParseError
-    from tqdm import tqdm
-    from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
-    import threading
     
     # Load the dataset
     if custom_dataset is not None:
@@ -195,12 +185,8 @@ def run_multi_agent_completions(
     if limit is not None:
         samples = samples[:limit]
     
-    # Initialize parser
-    parser = ContentParser()
-    
     # Create a thread-safe counter for parse errors
     parse_errors = 0
-    parse_lock = threading.Lock()
     
     # Create a thread-safe list for processed samples
     processed_samples = []
@@ -208,15 +194,6 @@ def run_multi_agent_completions(
     
     # Create a thread-safe tqdm progress bar
     progress_bar = tqdm(total=len(samples))
-    
-    # Create a thread-local storage for parsers (one per thread)
-    thread_local = threading.local()
-    
-    # Function to get a thread-local ContentParser
-    def get_parser():
-        if not hasattr(thread_local, "parser"):
-            thread_local.parser = ContentParser()
-        return thread_local.parser
     
     # Function to process a single sample
     def process_sample(idx, sample):
@@ -243,7 +220,8 @@ def run_multi_agent_completions(
                 skip_review=skip_review,
                 timeout=timeout,
                 thread_id=thread_id,
-                sample_idx=idx  # Pass the sample index for file naming
+                sample_idx=idx,  # Pass the sample index for file naming
+                rust_dir=rust_dir
             )
             
             # Get the appropriate prompt based on the task
@@ -379,7 +357,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run multi-agent code generation on HumanEval tasks")
     parser.add_argument("--task", type=str, default="humanevalsynthesize", 
                         choices=["humanevalfix", "humanevalsynthesize", 
-                                 "humanevalexplaindescribe", "humanevalexplainsynthesize"],
+                                 "humanevalexplaindescribe", "humanevalexplainsynthesize",
+                                 "custom"],
                         help="Task to generate completions for")
     parser.add_argument("--language", type=str, default="rust",
                         choices=list(LANGUAGE_TO_NAME.keys()),
@@ -414,6 +393,8 @@ if __name__ == "__main__":
                         help="Timeout in seconds for compilation and test execution")
     parser.add_argument("--max_workers", type=int, default=16,
                        help="Maximum number of concurrent workers for processing samples")
+    parser.add_argument("--rust_dir", type=str, default=None,
+                        help="Custom path to the Rust project directory")
                         
     args = parser.parse_args()
 
@@ -450,5 +431,6 @@ if __name__ == "__main__":
         output_file=args.output_file,
         skip_review=args.skip_review,
         timeout=int(os.getenv("TIMEOUT", args.timeout)),
-        max_workers=int(os.getenv("MAX_WORKERS", args.max_workers))
+        max_workers=int(os.getenv("MAX_WORKERS", args.max_workers)),
+        rust_dir=args.rust_dir
     )

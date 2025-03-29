@@ -44,8 +44,8 @@ from datasets import load_dataset
 from typing import List, Optional
 from tqdm import tqdm
 
-from code_generation_models import CodeGenerationModel, OpenAIChatModel, LambdaLabsModel
-from content_parser import ContentParser, ParseError
+from models.code_generation_models import CodeGenerationModel, OpenAIChatModel, LambdaLabsModel
+from parsers.content_parser import ContentParser, ParseError
 
 _CITATION = """
 @article{muennighoff2023octopack,

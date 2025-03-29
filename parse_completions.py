@@ -2,7 +2,7 @@ import os
 import argparse
 import jsonlines
 from tqdm import tqdm
-from content_parser import ContentParser, ParseError
+from parsers.content_parser import ContentParser, ParseError
 
 def parse_completions(input_file, output_file, verbose=False):
     """
