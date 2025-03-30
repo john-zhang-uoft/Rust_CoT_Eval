@@ -47,7 +47,23 @@ def load_jsonl_file(file_path: str) -> List[Dict[str, Any]]:
 def format_rust_problem(problem_description: str, difficulty: str, idx: int) -> Dict[str, Any]:
     """Format a problem description into a format suitable for MultiAgentModel"""
     
-    # Extract function name from the problem description if possible
+    # Check if this is a general Rust coding problem vs a function-specific one
+    is_general_question = any(general_keyword in problem_description.lower() for general_keyword in 
+                             ["implement a program", "create a rust application", "write a program", 
+                              "develop a rust", "build a", "write code", "implement a rust program",
+                              "create a simulation", "implement a simulation"])
+    
+    if is_general_question:
+        # For general programming tasks, we don't need to extract function details
+        return {
+            "task_id": f"{difficulty}_general_{idx}",
+            "prompt": problem_description,
+            "is_general": True,
+            "canonical_solution": "",
+            "test": ""
+        }
+    
+    # For function-specific problems, extract function details
     import re
     fn_match = re.search(r'fn\s+([a-zA-Z0-9_]+)', problem_description)
     entry_point = fn_match.group(1) if fn_match else "solution"
@@ -70,7 +86,8 @@ def format_rust_problem(problem_description: str, difficulty: str, idx: int) -> 
         "declaration": declaration,
         "prompt": problem_description,
         "canonical_solution": "",
-        "test": ""
+        "test": "",
+        "is_general": False
     }
 
 def analyze_results(output_file: str) -> Dict[str, Dict[str, Any]]:
@@ -83,7 +100,11 @@ def analyze_results(output_file: str) -> Dict[str, Dict[str, Any]]:
     # Extract difficulty from task_id
     for result in results:
         if "task_id" in result:
-            difficulty = result["task_id"].split("_")[0]
+            parts = result["task_id"].split("_")
+            difficulty = parts[0]
+            # Check if this is a general problem
+            if len(parts) > 1 and parts[1] == "general":
+                result["is_general"] = True
             result["difficulty"] = difficulty
     
     # Group by difficulty
@@ -91,16 +112,21 @@ def analyze_results(output_file: str) -> Dict[str, Dict[str, Any]]:
     
     for result in results:
         difficulty = result.get("difficulty", "unknown")
+        is_general = result.get("is_general", False)
         
-        if difficulty not in difficulty_stats:
-            difficulty_stats[difficulty] = {
+        # Create separate stats for general vs function-specific problems
+        stat_key = f"{difficulty}_general" if is_general else difficulty
+        
+        if stat_key not in difficulty_stats:
+            difficulty_stats[stat_key] = {
                 "total": 0,
                 "compilation_success": 0,
                 "test_success": 0,
-                "exit_reasons": {}
+                "exit_reasons": {},
+                "is_general": is_general
             }
         
-        stats = difficulty_stats[difficulty]
+        stats = difficulty_stats[stat_key]
         stats["total"] += 1
         
         # Check if compilation was successful in any iteration
@@ -122,6 +148,12 @@ def analyze_results(output_file: str) -> Dict[str, Dict[str, Any]]:
                                 if "compilation" in review_details:
                                     compilation = review_details["compilation"]
                                     if compilation.get("return_code", 1) == 0:
+                                        compilation_success = True
+                                        break
+                                # For general mode, also check execution
+                                elif is_general and "execution" in review_details:
+                                    execution = review_details["execution"]
+                                    if execution.get("return_code", 1) == 0:
                                         compilation_success = True
                                         break
                         
@@ -267,7 +299,8 @@ edition = "2021"
         timeout=60,
         max_workers=16,
         custom_dataset=all_problems,  # Pass our custom problems directly
-        rust_dir=main_rust_dir  # Pass the main Rust directory
+        rust_dir=main_rust_dir,  # Pass the main Rust directory
+        general_mode=True  # Enable general mode to handle both function-specific and general problems
     )
     
     # Analyze the results
@@ -279,33 +312,58 @@ edition = "2021"
     print("==========================")
     
     # Header row
-    print(f"{'Difficulty':<10} | {'Total':<6} | {'Compiled':<10} | {'Compile %':<10} | {'Tests Pass':<10} | {'Test %':<10}")
-    print("-" * 70)
+    print(f"{'Difficulty':<15} | {'Type':<12} | {'Total':<6} | {'Compiled':<10} | {'Compile %':<10} | {'Tests Pass':<10} | {'Test %':<10}")
+    print("-" * 90)
     
     # Calculate overall stats
     total_problems = 0
     total_compiled = 0
     total_tests_passed = 0
     
-    # Print stats for each difficulty
-    for difficulty, stats in sorted(difficulty_stats.items()):
+    # Separate general and function-specific problems
+    general_stats = {}
+    function_stats = {}
+    
+    for key, stats in difficulty_stats.items():
+        if stats.get("is_general", False):
+            general_stats[key] = stats
+        else:
+            function_stats[key] = stats
+    
+    # Print stats for function-specific problems
+    for difficulty, stats in sorted(function_stats.items()):
         total = stats["total"]
         compilation_success = stats["compilation_success"]
         test_success = stats["test_success"]
         compilation_rate = stats["compilation_rate"]
         test_success_rate = stats["test_success_rate"]
         
-        print(f"{difficulty:<10} | {total:<6} | {compilation_success:<10} | {compilation_rate:>9.2%} | {test_success:<10} | {test_success_rate:>9.2%}")
+        print(f"{difficulty:<15} | {'Function':<12} | {total:<6} | {compilation_success:<10} | {compilation_rate:>9.2%} | {test_success:<10} | {test_success_rate:>9.2%}")
+        
+        total_problems += total
+        total_compiled += compilation_success
+        total_tests_passed += test_success
+    
+    # Print stats for general programming problems
+    for difficulty, stats in sorted(general_stats.items()):
+        base_difficulty = difficulty.replace("_general", "")
+        total = stats["total"]
+        compilation_success = stats["compilation_success"]
+        test_success = stats["test_success"]
+        compilation_rate = stats["compilation_rate"]
+        test_success_rate = stats["test_success_rate"]
+        
+        print(f"{base_difficulty:<15} | {'General':<12} | {total:<6} | {compilation_success:<10} | {compilation_rate:>9.2%} | {test_success:<10} | {test_success_rate:>9.2%}")
         
         total_problems += total
         total_compiled += compilation_success
         total_tests_passed += test_success
     
     # Add overall stats
-    print("-" * 70)
+    print("-" * 90)
     overall_compile_rate = total_compiled / total_problems if total_problems > 0 else 0
     overall_test_rate = total_tests_passed / total_problems if total_problems > 0 else 0
-    print(f"{'OVERALL':<10} | {total_problems:<6} | {total_compiled:<10} | {overall_compile_rate:>9.2%} | {total_tests_passed:<10} | {overall_test_rate:>9.2%}")
+    print(f"{'OVERALL':<15} | {'All':<12} | {total_problems:<6} | {total_compiled:<10} | {overall_compile_rate:>9.2%} | {total_tests_passed:<10} | {overall_test_rate:>9.2%}")
     
     # Save summary stats
     summary = {

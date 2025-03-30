@@ -21,7 +21,6 @@ import traceback
 from models.code_generation_models import CodeGenerationModel, OpenAIChatModel, LambdaLabsModel
 from models.rust_code_reviewer_agent import RustCodeReviewerAgent
 from models.code_refinement_agent import CodeRefinementAgent
-from parsers.content_parser import ContentParser, ParseError
 
 # Default timeout for subprocess calls (in seconds)
 DEFAULT_TIMEOUT = 60  # 1 minute timeout for compilation and test execution

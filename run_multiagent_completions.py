@@ -18,7 +18,7 @@ from models.multi_agent_generation import (
 
 from models.rust_code_reviewer_agent import RustCodeReviewerAgent
 
-from run_code.generate_completions import (
+from generate_completions import (
     LANGUAGE_TO_NAME,
     get_prompt_synthesize,
     get_prompt_fix,
