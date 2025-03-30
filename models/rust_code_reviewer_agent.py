@@ -26,6 +26,7 @@ class RustCodeReviewerAgent(CodeGenerationModel):
         self.sample_idx = sample_idx  # Store the sample index for file naming
         self.thread_id = thread_id or os.getpid()  # Use process ID as default thread ID
         self.parser = ContentParser()  # Initialize ContentParser for parsing code
+        self._verbose = True  # Always enable verbose logging for code reviewer agent
         
         # Get absolute path to project root (where this script is located)
         self.project_root = os.path.dirname(os.path.abspath(__file__))
@@ -47,7 +48,29 @@ class RustCodeReviewerAgent(CodeGenerationModel):
         if not os.path.exists(cargo_toml):
             raise FileNotFoundError(f"Cargo.toml not found in {self.rust_dir}")
         
-        print(f"Using Rust project at: {self.rust_dir} with thread ID {self.thread_id}")
+        self._log(f"Using Rust project at: {self.rust_dir} with thread ID {self.thread_id}")
+            
+    def _log(self, message: str, color: str = None, always: bool = False, attrs=None, separate_section: bool = False):
+        """
+        Log a message if verbose is true or always is true
+        
+        Args:
+            message: The message to log
+            color: Optional color for the message (using termcolor)
+            always: Whether to log regardless of verbose setting
+            attrs: Additional attributes for termcolor
+            separate_section: Whether to add dividers before and after the message for emphasis
+        """
+        if self._verbose or always:
+            if separate_section:
+                print("-" * 40)
+            if color:
+                attrs = attrs or []
+                print(termcolor.colored(message, color, attrs=attrs))
+            else:
+                print(message)
+            if separate_section:
+                print("-" * 40)
             
     def _parse_code(self, raw_code: str, prompt: str, entry_point: str) -> str:
         """
@@ -64,68 +87,68 @@ class RustCodeReviewerAgent(CodeGenerationModel):
         # Remove any test modules from the raw code before extraction
         test_module_index = raw_code.find("#[cfg(test)]")
         if test_module_index != -1:
-            print(termcolor.colored("Removing test module from code before extraction.", "cyan", attrs=["bold"]))
+            self._log("Removing test module from code before extraction.", "cyan", attrs=["bold"])
             raw_code = raw_code[:test_module_index]
         
-        print(termcolor.colored(f"\nATTEMPTING TO PARSE CODE for {entry_point}:", "cyan", attrs=["bold"]))
+        self._log(f"\nATTEMPTING TO PARSE CODE for {entry_point}:", "cyan", attrs=["bold"])
         
         # Check if the raw code directly contains the entry point function
         if f"fn {entry_point}" in raw_code:
-            print(f"Raw code contains function definition: 'fn {entry_point}'")
+            self._log(f"Raw code contains function definition: 'fn {entry_point}'")
         else:
-            print(f"WARNING: Raw code does not directly contain 'fn {entry_point}' - this may cause parsing issues")
+            self._log(f"WARNING: Raw code does not directly contain 'fn {entry_point}' - this may cause parsing issues", "yellow")
         
         # Check for Markdown code blocks
         code_blocks = re.findall(r'```(?:rust)?\s*(.*?)\s*```', raw_code, re.DOTALL)
         if code_blocks:
-            print(f"Found {len(code_blocks)} Markdown code blocks in raw code")
+            self._log(f"Found {len(code_blocks)} Markdown code blocks in raw code")
             # Print largest code block preview
             largest_block = max(code_blocks, key=len)
             preview = largest_block.split('\n')[:5]
-            print(f"Largest code block preview ({len(largest_block)} chars):")
-            print('\n'.join(preview))
+            self._log(f"Largest code block preview ({len(largest_block)} chars):")
+            self._log('\n'.join(preview))
             if f"fn {entry_point}" in largest_block:
-                print(f"  - Contains function definition: 'fn {entry_point}'")
+                self._log(f"  - Contains function definition: 'fn {entry_point}'")
                 raw_code = largest_block
         else:
-            print("No Markdown code blocks found in raw code")
+            self._log("No Markdown code blocks found in raw code")
         
         # Try to use ContentParser
         try:
-            print(f"Calling ContentParser with entry_point='{entry_point}'")
+            self._log(f"Calling ContentParser with entry_point='{entry_point}'")
             parsed_code = self.parser(prompt, raw_code, entry_point)
-            print(termcolor.colored(f"\nPARSE SUCCESSFUL for {entry_point}:", "green", attrs=["bold"]))
-            print("-" * 40)
-            print(parsed_code)
-            print("-" * 40)
+            self._log(f"\nPARSE SUCCESSFUL for {entry_point}:", "green", attrs=["bold"])
+            self._log("-" * 40)
+            self._log(parsed_code)
+            self._log("-" * 40)
             return parsed_code
         except ParseError as e:
-            print(termcolor.colored(f"\nPARSE ERROR: {str(e)}", "red", attrs=["bold"]))
+            self._log(f"\nPARSE ERROR: {str(e)}", "red", attrs=["bold"])
             
             # Fallback: Direct extraction of function
-            print("Attempting fallback extraction...")
+            self._log("Attempting fallback extraction...")
             pattern = fr'fn\s+{re.escape(entry_point)}[^{{]*{{[^{{]*(?:{{[^{{]*}}[^{{]*)*}}'
             match = re.search(pattern, raw_code, re.DOTALL)
             if match:
                 extracted_code = match.group(0)
-                print(termcolor.colored(f"\nFALLBACK EXTRACTION SUCCESSFUL:", "yellow", attrs=["bold"]))
-                print("-" * 40)
-                print(extracted_code)
-                print("-" * 40)
+                self._log(f"\nFALLBACK EXTRACTION SUCCESSFUL:", "yellow", attrs=["bold"])
+                self._log("-" * 40)
+                self._log(extracted_code)
+                self._log("-" * 40)
                 return extracted_code
             
             # If everything fails, try to extract from code blocks
             if code_blocks:
                 for block in sorted(code_blocks, key=len, reverse=True):
                     if f"fn {entry_point}" in block:
-                        print(termcolor.colored(f"\nEXTRACTING FROM CODE BLOCK:", "yellow", attrs=["bold"]))
-                        print("-" * 40)
-                        print(block)
-                        print("-" * 40)
+                        self._log(f"\nEXTRACTING FROM CODE BLOCK:", "yellow", attrs=["bold"])
+                        self._log("-" * 40)
+                        self._log(block)
+                        self._log("-" * 40)
                         return block
             
             # Last resort: return raw code
-            print("All extraction attempts failed. Returning raw code.")
+            self._log("All extraction attempts failed. Returning raw code.", "red")
             return raw_code
 
     def generate_code(self, prompt: str, n: int = 1) -> List[str]:
@@ -208,17 +231,17 @@ class RustCodeReviewerAgent(CodeGenerationModel):
             combined_code = f"{prelude}{main_fn}{declaration}\n{implementation}"
             
             # Print the code being compiled
-            print(termcolor.colored(f"\nCOMPILING CODE:", "cyan", attrs=["bold"]))
-            print("-" * 40)
-            print(combined_code)
-            print("-" * 40)
+            self._log(f"\nCOMPILING CODE:", "cyan", attrs=["bold"])
+            self._log("-" * 40)
+            self._log(combined_code)
+            self._log("-" * 40)
             
             # Write to file
             with open(file_path, "w") as f:
                 f.write(combined_code)
             
             # Log what we're compiling
-            print(f"Compiling: {file_path}")
+            self._log(f"Compiling: {file_path}")
             
             # Try to compile with warnings about unused imports suppressed
             process = subprocess.run(
@@ -229,7 +252,7 @@ class RustCodeReviewerAgent(CodeGenerationModel):
                 timeout=self.timeout  # Use instance timeout
             )
         except subprocess.TimeoutExpired:
-            print(termcolor.colored(f"Compilation timed out for {file_prefix}.rs after {self.timeout} seconds", "red", attrs=["bold"]))
+            self._log(f"Compilation timed out for {file_prefix}.rs after {self.timeout} seconds", "red", attrs=["bold"])
             return False, f"Compilation timed out after {self.timeout} seconds.", {
                 "duration": time.time() - start_time,
                 "error": "Compilation timed out",
@@ -271,8 +294,8 @@ Problem description (the user's solution may only use imports listed in this des
             
             return False, error_analysis, details
         
-        # MODIFIED: Log successful compilation details
-        print(termcolor.colored(f"Compilation succeeded for {file_prefix}.rs in {details['duration']:.2f} seconds.", "green"))
+        # Log successful compilation details
+        self._log(f"Compilation succeeded for {file_prefix}.rs in {details['duration']:.2f} seconds.", "green")
         return True, "Code compiles successfully.", details
     
     def generate_tests(self, prompt: str, declaration: str, implementation: str, entry_point: str, implementation_visible: bool = True) -> Tuple[bool, str, Dict[str, Any]]:
@@ -281,10 +304,10 @@ Problem description (the user's solution may only use imports listed in this des
         combined_code = declaration + "\n" + implementation
         
         # Print the implementation we're generating tests for
-        print(termcolor.colored(f"\nGENERATING TESTS FOR IMPLEMENTATION:", "cyan", attrs=["bold"]))
-        print("-" * 40)
-        print(combined_code)
-        print("-" * 40)
+        self._log(f"\nGENERATING TESTS FOR IMPLEMENTATION:", "cyan", attrs=["bold"])
+        self._log("-" * 40)
+        self._log(combined_code)
+        self._log("-" * 40)
         
         test_prompt = f"""
 You are a Rust testing expert.
@@ -319,10 +342,10 @@ Do not include any explanations, comments, or markdown formatting in your respon
         }
         
         # Show the raw test code
-        print(termcolor.colored(f"\nRAW TEST CODE:", "cyan", attrs=["bold"]))
-        print("-" * 40)
-        print(raw_test_code)
-        print("-" * 40)
+        self._log(f"\nRAW TEST CODE:", "cyan", attrs=["bold"])
+        self._log("-" * 40)
+        self._log(raw_test_code)
+        self._log("-" * 40)
         
         # Extract test module directly instead of using ContentParser
         # First try to extract from Markdown code blocks
@@ -330,27 +353,27 @@ Do not include any explanations, comments, or markdown formatting in your respon
         if code_blocks:
             # Use the largest code block
             test_code = max(code_blocks, key=len)
-            print(termcolor.colored(f"\nEXTRACTED TEST CODE FROM CODE BLOCKS:", "cyan", attrs=["bold"]))
-            print("-" * 40)
-            print(test_code)
-            print("-" * 40)
+            self._log(f"\nEXTRACTED TEST CODE FROM CODE BLOCKS:", "cyan", attrs=["bold"])
+            self._log("-" * 40)
+            self._log(test_code)
+            self._log("-" * 40)
         else:
             # Try to extract #[cfg(test)] module directly
             test_module_match = re.search(r'(#\[cfg\(test\)].*)', raw_test_code, re.DOTALL)
             if test_module_match:
                 test_code = test_module_match.group(1)
-                print(termcolor.colored(f"\nEXTRACTED TEST CODE FROM #[cfg(test)]:", "cyan", attrs=["bold"]))
-                print("-" * 40)
-                print(test_code)
-                print("-" * 40)
+                self._log(f"\nEXTRACTED TEST CODE FROM #[cfg(test)]:", "cyan", attrs=["bold"])
+                self._log("-" * 40)
+                self._log(test_code)
+                self._log("-" * 40)
             else:
                 # Just use the raw response, but remove any non-code content
                 # Remove any "Here's the test code:" prefixes
                 test_code = re.sub(r'^.*?(\bmod tests\b|\buse super::\*)', r'\1', raw_test_code, flags=re.DOTALL)
-                print(termcolor.colored(f"\nEXTRACTED TEST CODE FROM RAW RESPONSE:", "cyan", attrs=["bold"]))
-                print("-" * 40)
-                print(test_code)
-                print("-" * 40)
+                self._log(f"\nEXTRACTED TEST CODE FROM RAW RESPONSE:", "cyan", attrs=["bold"])
+                self._log("-" * 40)
+                self._log(test_code)
+                self._log("-" * 40)
         
         # Ensure the test code starts with #[cfg(test)]
         if not test_code.strip().startswith("#[cfg(test)]"):
@@ -362,10 +385,10 @@ Do not include any explanations, comments, or markdown formatting in your respon
                 # Add full wrapper
                 test_code = f"#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    {test_code}\n}}"
                 
-            print(termcolor.colored(f"\nADDED #[cfg(test)] WRAPPER:", "yellow", attrs=["bold"]))
-            print("-" * 40)
-            print(test_code)
-            print("-" * 40)
+            self._log(f"\nADDED #[cfg(test)] WRAPPER:", "yellow", attrs=["bold"])
+            self._log("-" * 40)
+            self._log(test_code)
+            self._log("-" * 40)
         
         # Check if the test module contains test functions
         if "#[test]" not in test_code:
@@ -378,10 +401,10 @@ Do not include any explanations, comments, or markdown formatting in your respon
         if opening_braces > closing_braces:
             # Add missing closing braces
             test_code += '\n' + '}' * (opening_braces - closing_braces)
-            print(termcolor.colored(f"\nFIXED UNBALANCED BRACES:", "yellow", attrs=["bold"]))
-            print("-" * 40)
-            print(test_code)
-            print("-" * 40)
+            self._log(f"\nFIXED UNBALANCED BRACES:", "yellow", attrs=["bold"])
+            self._log("-" * 40)
+            self._log(test_code)
+            self._log("-" * 40)
         
         details["test_module"] = test_code
         
@@ -390,7 +413,7 @@ Do not include any explanations, comments, or markdown formatting in your respon
         if len(test_preview) > 5:
             test_preview = test_preview[:5] + ["..."]
         test_preview = "\n".join(test_preview)
-        print(termcolor.colored(f"\nFINAL TEST CODE (PREVIEW):\n{test_preview}", "green", attrs=["bold"]))
+        self._log(f"\nFINAL TEST CODE (PREVIEW):\n{test_preview}", "green", attrs=["bold"])
         
         return True, test_code, details
     
@@ -426,7 +449,7 @@ Do not include any explanations, comments, or markdown formatting in your respon
             # Check for module sanity
             if not tests.strip().startswith("#[cfg(test)]"):
                 tests = f"#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    {tests}\n}}"
-                print(termcolor.colored(f"Fixed test module wrapper", "yellow"))
+                self._log(f"Fixed test module wrapper", "yellow")
             
             # Combine the code with proper formatting and tests
             combined_code = f"{prelude}{main_fn}{declaration}\n{implementation}\n\n{tests}"
@@ -438,20 +461,20 @@ Do not include any explanations, comments, or markdown formatting in your respon
             if opening_braces > closing_braces:
                 # Add missing closing braces
                 combined_code += '\n' + '}' * (opening_braces - closing_braces)
-                print(termcolor.colored(f"Fixed {opening_braces - closing_braces} unbalanced braces", "yellow"))
+                self._log(f"Fixed {opening_braces - closing_braces} unbalanced braces", "yellow")
             
             # Print the code and tests being run
-            print(termcolor.colored(f"\nRUNNING TESTS ON CODE:", "cyan", attrs=["bold"]))
-            print("-" * 40)
-            print(combined_code)
-            print("-" * 40)
+            self._log(f"\nRUNNING TESTS ON CODE:", "cyan", attrs=["bold"])
+            self._log("-" * 40)
+            self._log(combined_code)
+            self._log("-" * 40)
             
             # Write to file
             with open(file_path, "w") as f:
                 f.write(combined_code)
             
             # Log what we're testing
-            print(f"Testing: {file_path}")
+            self._log(f"Testing: {file_path}")
             
             # First compile to check for syntax errors
             compile_process = subprocess.run(
@@ -463,8 +486,8 @@ Do not include any explanations, comments, or markdown formatting in your respon
             )
             
             if compile_process.returncode != 0:
-                print(termcolor.colored(f"Compilation failed for tests:", "red", attrs=["bold"]))
-                print(compile_process.stderr)
+                self._log(f"Compilation failed for tests:", "red", attrs=["bold"])
+                self._log(compile_process.stderr)
                 return False, f"Test compilation failed: {compile_process.stderr}", {
                     "duration": time.time() - start_time,
                     "error": "Test compilation failed",
@@ -473,7 +496,7 @@ Do not include any explanations, comments, or markdown formatting in your respon
                     "file_path": file_path
                 }
         except subprocess.TimeoutExpired:
-            print(termcolor.colored(f"Compilation timed out for {file_prefix}.rs after {self.timeout} seconds", "red", attrs=["bold"]))
+            self._log(f"Compilation timed out for {file_prefix}.rs after {self.timeout} seconds", "red", attrs=["bold"])
             return False, f"Test compilation timed out after {self.timeout} seconds.", {
                 "duration": time.time() - start_time,
                 "error": "Test compilation timed out",
@@ -491,7 +514,7 @@ Do not include any explanations, comments, or markdown formatting in your respon
                 timeout=self.timeout  # Use instance timeout 
             )
         except subprocess.TimeoutExpired:
-            print(termcolor.colored(f"Test execution timed out for {file_prefix}.rs after {self.timeout} seconds", "red", attrs=["bold"]))
+            self._log(f"Test execution timed out for {file_prefix}.rs after {self.timeout} seconds", "red", attrs=["bold"])
             return False, f"Tests timed out after {self.timeout} seconds. This may indicate an infinite loop or deadlock in the implementation.", {
                 "duration": time.time() - start_time,
                 "error": "Test execution timed out",
@@ -512,22 +535,22 @@ Do not include any explanations, comments, or markdown formatting in your respon
         
         if process.returncode != 0:
             # Tests failed
-            print(termcolor.colored(f"Tests failed for {file_prefix}.rs", "red", attrs=["bold"]))
+            self._log(f"Tests failed for {file_prefix}.rs", "red", attrs=["bold"])
             # Extract relevant test failure info
             test_output = process.stdout
             if "test result: FAILED" in test_output:
-                print(termcolor.colored(f"Test failures:", "red"))
+                self._log(f"Test failures:", "red")
                 # Extract the failing test info for clarity
                 failing_tests = re.findall(r'test (.*?) \.\.\. FAILED', test_output)
                 for test in failing_tests:
-                    print(termcolor.colored(f"  - {test}", "red"))
+                    self._log(f"  - {test}", "red")
             return False, process.stdout + "\n" + process.stderr, details
         
-        print(termcolor.colored(f"Tests passed for {file_prefix}.rs", "green", attrs=["bold"]))
+        self._log(f"Tests passed for {file_prefix}.rs", "green", attrs=["bold"])
         # Extract test summary for clarity
         test_count_match = re.search(r'running (\d+) tests', process.stdout)
         test_count = test_count_match.group(1) if test_count_match else "?"
-        print(termcolor.colored(f"All {test_count} tests passed!", "green"))
+        self._log(f"All {test_count} tests passed!", "green")
         
         return True, "All tests passed.", details
     
@@ -536,21 +559,21 @@ Do not include any explanations, comments, or markdown formatting in your respon
         start_time = time.time()
         
         # First do some basic analysis of the test failures
-        print(termcolor.colored(f"\nANALYZING TEST FAILURES:", "cyan", attrs=["bold"]))
+        self._log(f"\nANALYZING TEST FAILURES:", "cyan", attrs=["bold"])
         
         # Extract failing tests
         failing_tests = re.findall(r'test (.*?) \.\.\. FAILED', test_output)
         if failing_tests:
-            print(f"Detected {len(failing_tests)} failing tests:")
+            self._log(f"Detected {len(failing_tests)} failing tests:")
             for test in failing_tests:
-                print(f"  - {test}")
+                self._log(f"  - {test}")
                 
             # Try to extract failure messages
             failure_details = re.findall(r'thread .* panicked at (.*?)(,|\n)', test_output)
             if failure_details:
-                print("Failure messages:")
+                self._log("Failure messages:")
                 for detail in failure_details:
-                    print(f"  - {detail[0]}")
+                    self._log(f"  - {detail[0]}")
         
         feedback_prompt = f"""
 As a Rust expert, analyze why these tests are failing for the given problem:
@@ -592,14 +615,14 @@ Your feedback should be specific and focus on fixing the implementation, not the
         }
         
         # Print a preview of the feedback
-        print(termcolor.colored(f"\nGENERATED FEEDBACK:", "cyan", attrs=["bold"]))
-        print("-" * 40)
+        self._log(f"\nGENERATED FEEDBACK:", "cyan", attrs=["bold"])
+        self._log("-" * 40)
         feedback_preview = feedback.split('\n')
         if len(feedback_preview) > 10:
-            print('\n'.join(feedback_preview[:10] + ['...']))
+            self._log('\n'.join(feedback_preview[:10] + ['...']))
         else:
-            print(feedback)
-        print("-" * 40)
+            self._log(feedback)
+        self._log("-" * 40)
         
         return feedback, details
     
@@ -620,9 +643,9 @@ Your feedback should be specific and focus on fixing the implementation, not the
                 for file_name in thread_files:
                     file_path = os.path.join(self.rust_bin, file_name)
                     os.remove(file_path)
-                    print(f"Removed temporary file: {file_path}")
+                    self._log(f"Removed temporary file: {file_path}")
             except Exception as e:
-                print(f"Warning: Failed to clean up resources for thread {self.thread_id}: {str(e)}")
+                self._log(f"Warning: Failed to clean up resources for thread {self.thread_id}: {str(e)}", "yellow")
                 # Don't raise the exception, just log it
 
     @property

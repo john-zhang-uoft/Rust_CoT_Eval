@@ -95,7 +95,7 @@ class MultiAgentModel(CodeGenerationModel):
         self._rust_dir = rust_dir
         
         # Initialize agents
-        self._generator = CodeRefinementAgent(gen_model)
+        self._generator = CodeRefinementAgent(gen_model, verbose=verbose)
         self._reviewer = RustCodeReviewerAgent(
             review_model, 
             timeout=timeout, 
@@ -151,14 +151,11 @@ class MultiAgentModel(CodeGenerationModel):
             self._log(f"Entry point: {entry_point}")
             self._log(f"Declaration: {declaration}")
             
-        self._log("\nGENERATING INITIAL CODE...", "cyan", always=True, attrs=["bold"], separate_section=True)
+        self._log("STARTING GENERATION WITH MULTI-AGENT APPROACH...\n", "cyan", always=True, attrs=["bold"])
 
         # Generate the initial code - raw output from the model
         raw_codes = self._generator.generate_code(prompt, n=1)
         raw_code = raw_codes[0] if raw_codes else ""
-        
-        self._log("\nGENERATOR RAW OUTPUT:", "yellow", always=True, attrs=["bold"], separate_section=True)
-        self._log(raw_code, always=True, separate_section=True)
         
         # Refinement loop
         success = False
@@ -168,11 +165,9 @@ class MultiAgentModel(CodeGenerationModel):
         iterations_data = []  # Track data for each iteration
         
         for i in range(self._max_iterations):
-            self._log(f"\nREVIEW ITERATION {i+1}/{self._max_iterations}...", "cyan", always=True, attrs=["bold"], separate_section=True)
+            self._log(f"STARTING REVIEW ITERATION {i+1}/{self._max_iterations}...\n", "cyan", always=True, attrs=["bold"])
                 
             try:
-                self._log("\nSending raw code to reviewer for parsing and testing:", "cyan", always=True, attrs=["bold"], separate_section=True)
-                
                 feedback_list, details, successes = self._reviewer.generate_feedback(
                     prompt,
                     declaration, 
@@ -214,48 +209,29 @@ class MultiAgentModel(CodeGenerationModel):
                 iterations_data.append(iteration_data)
                 exit_reason = self.EXIT_REASON_ERROR
             
-            self._log("\nREVIEWER OUTPUT:", "yellow", always=True, attrs=["bold"], separate_section=True)
-            self._log(feedback, always=True, separate_section=True)
-            
-            if "compilation" in review_details:
-                comp_details = review_details["compilation"]
-                if comp_details.get("return_code", 0) != 0:
-                    self._log("\nCOMPILATION ERROR:", "red", always=True, attrs=["bold"], separate_section=True)
-                    self._log(comp_details.get("stderr", "No error output available"), always=True, separate_section=True)
-            
-            if "test_execution" in review_details:
-                test_details = review_details["test_execution"]
-                if test_details.get("return_code", 0) != 0:
-                    self._log("\nTEST FAILURE:", "red", always=True, attrs=["bold"], separate_section=True)
-                    self._log(test_details.get("stdout", "") + "\n" + test_details.get("stderr", ""), always=True, separate_section=True)
-            
+            # Check review results and log summary only
             if success:
                 self._log("\nCODE PASSED ALL REVIEWS!", "green", always=True, attrs=["bold"], separate_section=True)
                 exit_reason = self.EXIT_REASON_SUCCESS
                 break
                 
             if i == self._max_iterations - 1:
+                self._log("\nREACHED MAXIMUM ITERATIONS", "yellow", always=True, attrs=["bold"])
                 break
                 
-            self._log("\nREFINING CODE...", "cyan", always=True, attrs=["bold"], separate_section=True)
+            # Only log the high-level action, details are in the agent logs
+            self._log("\nSTARTING CODE REFINEMENT...", "cyan", always=True, attrs=["bold"], separate_section=True)
                 
             # Refine the code based on feedback - get new raw code
             try:
                 combined_code = f"{declaration}\n\n{current_raw_code}"
-                # Updated: remove entry_point parameter to match the new signature of refine_code
                 refined_codes = self._generator.refine_code(prompt, code=combined_code, feedback=feedback, n=1)
                 new_raw_code = refined_codes[0] if refined_codes else ""
                 
-                self._log("\nREFINED CODE:", "green", always=True, attrs=["bold"], separate_section=True)
-                self._log(new_raw_code, always=True, separate_section=True)
-                
                 parsed_implementation = self._reviewer._parse_code(new_raw_code, prompt, entry_point)
                 
-                self._log("\nPARSED REFINED CODE:", "cyan", separate_section=True)
-                self._log(parsed_implementation)
-                
                 if parsed_implementation == current_implementation:
-                    self._log("\nCODE DIDN'T CHANGE AFTER REFINEMENT. STOPPING ITERATIONS.", "red", always=True, attrs=["bold"], separate_section=True)
+                    self._log("\nCODE DIDN'T CHANGE AFTER REFINEMENT. STOPPING ITERATIONS.", "red", always=True, attrs=["bold"])
                     exit_reason = self.EXIT_REASON_NO_CHANGE
                     break
                 
@@ -269,12 +245,10 @@ class MultiAgentModel(CodeGenerationModel):
                 exit_reason = self.EXIT_REASON_ERROR
                 break
         
-        self._log("\nGETTING FINAL PARSED CODE:", "cyan", always=True, attrs=["bold"], separate_section=True)
+        self._log("\nGETTING FINAL RESULT...", "cyan", always=True, attrs=["bold"])
         final_code = self._reviewer._parse_code(current_raw_code, prompt, entry_point)
         
-        self._log("\nFINAL PARSED CODE:", "green", always=True, attrs=["bold"], separate_section=True)
-        self._log(final_code, always=True, separate_section=True)
-        self._log(f"Exit reason: {exit_reason}", always=True)
+        self._log(f"\nGENERATION COMPLETE - EXIT REASON: {exit_reason}", "green", always=True, attrs=["bold"], separate_section=True)
         
         generation_details = {
             "exit_reason": exit_reason,
