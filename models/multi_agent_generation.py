@@ -16,6 +16,7 @@ from tqdm import tqdm
 import jsonlines
 import time
 import termcolor
+import traceback
 
 from models.code_generation_models import CodeGenerationModel, OpenAIChatModel, LambdaLabsModel
 from models.rust_code_reviewer_agent import RustCodeReviewerAgent
@@ -104,6 +105,28 @@ class MultiAgentModel(CodeGenerationModel):
             rust_dir=rust_dir
         )
     
+    def _log(self, message: str, color: str = None, always: bool = False, attrs=None, separate_section: bool = False):
+        """
+        Log a message if verbose is true or always is true
+        
+        Args:
+            message: The message to log
+            color: Optional color for the message (using termcolor)
+            always: Whether to log regardless of verbose setting
+            attrs: Additional attributes for termcolor
+            separate_section: Whether to add dividers before and after the message for emphasis
+        """
+        if self._verbose or always:
+            if separate_section:
+                print("-" * 40)
+            if color:
+                attrs = attrs or []
+                print(termcolor.colored(message, color, attrs=attrs))
+            else:
+                print(message)
+            if separate_section:
+                print("-" * 40)
+                
     def generate_code(self, prompt: str, n: int = 1, declaration: str = None, entry_point: str = None) -> Tuple[List[str], Dict[str, Any]]:
         """
         Generate code using the multi-agent approach
@@ -124,21 +147,19 @@ class MultiAgentModel(CodeGenerationModel):
             parsed_decl, parsed_entry = self._parse_prompt(prompt)
             declaration = declaration or parsed_decl
             entry_point = entry_point or parsed_entry
-        
-        if self._verbose or True:  # Always print these, regardless of verbose flag
-            print("\n" + termcolor.colored("GENERATING INITIAL CODE...", "cyan", attrs=["bold"]))
-            print(f"Entry point: {entry_point}")
-            print(f"Declaration: {declaration}")
+
+            self._log("Extracted entry point and declaration from prompt:")
+            self._log(f"Entry point: {entry_point}")
+            self._log(f"Declaration: {declaration}")
             
+        self._log("\nGENERATING INITIAL CODE...", "cyan", always=True, attrs=["bold"], separate_section=True)
+
         # Generate the initial code - raw output from the model
         raw_codes = self._generator.generate_code(prompt, n=1)
         raw_code = raw_codes[0] if raw_codes else ""
         
-        if self._verbose or True:  # Always print these, regardless of verbose flag
-            print("\n" + termcolor.colored("GENERATOR RAW OUTPUT:", "yellow", attrs=["bold"]))
-            print("-" * 40)
-            print(raw_code)
-            print("-" * 40)
+        self._log("\nGENERATOR RAW OUTPUT:", "yellow", always=True, attrs=["bold"], separate_section=True)
+        self._log(raw_code, always=True, separate_section=True)
         
         # Refinement loop
         success = False
@@ -148,15 +169,11 @@ class MultiAgentModel(CodeGenerationModel):
         iterations_data = []  # Track data for each iteration
         
         for i in range(self._max_iterations):
-            if self._verbose or True:  # Always print these, regardless of verbose flag
-                print(f"\n" + termcolor.colored(f"REVIEW ITERATION {i+1}/{self._max_iterations}...", "cyan", attrs=["bold"]))
+            self._log(f"\nREVIEW ITERATION {i+1}/{self._max_iterations}...", "cyan", always=True, attrs=["bold"], separate_section=True)
                 
-            # Review the code
             try:
-                # The reviewer will parse the raw code and compile/test it
-                print(termcolor.colored(f"\nSending raw code to reviewer for parsing and testing:", "cyan", attrs=["bold"]))
+                self._log("\nSending raw code to reviewer for parsing and testing:", "cyan", always=True, attrs=["bold"], separate_section=True)
                 
-                # Call generate_feedback with proper positional arguments
                 feedback_list, details, successes = self._reviewer.generate_feedback(
                     prompt,
                     declaration, 
@@ -168,11 +185,7 @@ class MultiAgentModel(CodeGenerationModel):
                 success = successes[0] if successes else False
                 review_details = details[0] if details else {}
                 
-                # Get the parsed implementation used for review
-                if "implementation" in review_details:
-                    current_implementation = review_details["implementation"]
-                else:
-                    current_implementation = self._reviewer._parse_code(current_raw_code, prompt, entry_point)
+                current_implementation = self._reviewer._parse_code(current_raw_code, prompt, entry_point)
                 
                 iteration_data = {
                     "iteration": i,
@@ -185,9 +198,8 @@ class MultiAgentModel(CodeGenerationModel):
                 
             except Exception as e:
                 error_msg = f"Error during code review: {str(e)}"
-                print(termcolor.colored(error_msg, "red", attrs=["bold"]))
+                self._log(error_msg, "red", always=True, attrs=["bold"], separate_section=True)
                 if self._verbose:
-                    import traceback
                     traceback.print_exc()
                 feedback = f"There was an error during code review: {str(e)}. The code might have timing or resource issues."
                 review_details = {"error": str(e)}
@@ -203,67 +215,48 @@ class MultiAgentModel(CodeGenerationModel):
                 iterations_data.append(iteration_data)
                 exit_reason = self.EXIT_REASON_ERROR
             
-            if self._verbose or True:
-                print("\n" + termcolor.colored("REVIEWER OUTPUT:", "yellow", attrs=["bold"]))
-                print("-" * 40)
-                print(feedback)
-                print("-" * 40)
-                if "compilation" in review_details:
-                    comp_details = review_details["compilation"]
-                    if comp_details.get("return_code", 0) != 0:
-                        print("\n" + termcolor.colored("COMPILATION ERROR:", "red", attrs=["bold"]))
-                        print("-" * 40)
-                        print(comp_details.get("stderr", "No error output available"))
-                        print("-" * 40)
-                if "test_execution" in review_details:
-                    test_details = review_details["test_execution"]
-                    if test_details.get("return_code", 0) != 0:
-                        print("\n" + termcolor.colored("TEST FAILURE:", "red", attrs=["bold"]))
-                        print("-" * 40)
-                        print(test_details.get("stdout", "") + "\n" + test_details.get("stderr", ""))
-                        print("-" * 40)
+            self._log("\nREVIEWER OUTPUT:", "yellow", always=True, attrs=["bold"], separate_section=True)
+            self._log(feedback, always=True, separate_section=True)
+            
+            if "compilation" in review_details:
+                comp_details = review_details["compilation"]
+                if comp_details.get("return_code", 0) != 0:
+                    self._log("\nCOMPILATION ERROR:", "red", always=True, attrs=["bold"], separate_section=True)
+                    self._log(comp_details.get("stderr", "No error output available"), always=True, separate_section=True)
+            
+            if "test_execution" in review_details:
+                test_details = review_details["test_execution"]
+                if test_details.get("return_code", 0) != 0:
+                    self._log("\nTEST FAILURE:", "red", always=True, attrs=["bold"], separate_section=True)
+                    self._log(test_details.get("stdout", "") + "\n" + test_details.get("stderr", ""), always=True, separate_section=True)
             
             if success:
-                if self._verbose or True:
-                    print("\n" + termcolor.colored("CODE PASSED ALL REVIEWS!", "green", attrs=["bold"]))
+                self._log("\nCODE PASSED ALL REVIEWS!", "green", always=True, attrs=["bold"], separate_section=True)
                 exit_reason = self.EXIT_REASON_SUCCESS
                 break
                 
             if i == self._max_iterations - 1:
                 break
                 
-            if self._verbose or True:
-                print("\n" + termcolor.colored("REFINING CODE...", "cyan", attrs=["bold"]))
+            self._log("\nREFINING CODE...", "cyan", always=True, attrs=["bold"], separate_section=True)
                 
             # Refine the code based on feedback - get new raw code
             try:
                 combined_code = f"{declaration}\n\n{current_raw_code}"
                 # Updated: remove entry_point parameter to match the new signature of refine_code
-                refined_codes = self._generator.refine_code(
-                    prompt, 
-                    code=combined_code,  # Use combined declaration + implementation
-                    feedback=feedback,
-                    n=1
-                )
+                refined_codes = self._generator.refine_code(prompt, code=combined_code, feedback=feedback, n=1)
                 new_raw_code = refined_codes[0] if refined_codes else ""
                 
-                if self._verbose or True:
-                    print("\n" + termcolor.colored("REFINED CODE:", "green", attrs=["bold"]))
-                    print("-" * 40)
-                    print(new_raw_code)
-                    print("-" * 40)
+                self._log("\nREFINED CODE:", "green", always=True, attrs=["bold"], separate_section=True)
+                self._log(new_raw_code, always=True, separate_section=True)
                 
                 parsed_implementation = self._reviewer._parse_code(new_raw_code, prompt, entry_point)
                 
-                if self._verbose:
-                    print("\n" + termcolor.colored("PARSED REFINED CODE:", "cyan", attrs=["bold"]))
-                    print("-" * 40)
-                    print(parsed_implementation)
-                    print("-" * 40)
+                self._log("\nPARSED REFINED CODE:", "cyan", separate_section=True)
+                self._log(parsed_implementation)
                 
                 if parsed_implementation == current_implementation:
-                    if self._verbose or True:
-                        print("\n" + termcolor.colored("CODE DIDN'T CHANGE AFTER REFINEMENT. STOPPING ITERATIONS.", "red", attrs=["bold"]))
+                    self._log("\nCODE DIDN'T CHANGE AFTER REFINEMENT. STOPPING ITERATIONS.", "red", always=True, attrs=["bold"], separate_section=True)
                     exit_reason = self.EXIT_REASON_NO_CHANGE
                     break
                 
@@ -271,22 +264,18 @@ class MultiAgentModel(CodeGenerationModel):
                 current_implementation = parsed_implementation
             except Exception as e:
                 error_msg = f"Error during code refinement: {str(e)}"
-                print(termcolor.colored(error_msg, "red", attrs=["bold"]))
+                self._log(error_msg, "red", always=True, attrs=["bold"], separate_section=True)
                 if self._verbose:
-                    import traceback
                     traceback.print_exc()
                 exit_reason = self.EXIT_REASON_ERROR
                 break
         
-        print(termcolor.colored(f"\nGETTING FINAL PARSED CODE:", "cyan", attrs=["bold"]))
+        self._log("\nGETTING FINAL PARSED CODE:", "cyan", always=True, attrs=["bold"], separate_section=True)
         final_code = self._reviewer._parse_code(current_raw_code, prompt, entry_point)
         
-        if self._verbose or True:
-            print("\n" + termcolor.colored("FINAL PARSED CODE:", "green", attrs=["bold"]))
-            print("-" * 40)
-            print(final_code)
-            print("-" * 40)
-            print(f"Exit reason: {exit_reason}")
+        self._log("\nFINAL PARSED CODE:", "green", always=True, attrs=["bold"], separate_section=True)
+        self._log(final_code, always=True, separate_section=True)
+        self._log(f"Exit reason: {exit_reason}", always=True)
         
         generation_details = {
             "exit_reason": exit_reason,
@@ -321,13 +310,11 @@ class MultiAgentModel(CodeGenerationModel):
                         imports_match = re.search(fr'(.*?)fn\s+{entry_point}', content_after_main, re.DOTALL)
                         imports = imports_match.group(1).strip() if imports_match else ""
                         declaration = imports + ("\n" if imports else "") + fn_signature_match.group(0)
-                        if self._verbose:
-                            print(f"Parsed entry point: {entry_point}")
+                        self._log(f"Parsed entry point: {entry_point}")
                         return declaration, entry_point
                 declaration_match = re.search(fr'(fn\s+{entry_point}(?:<[^>]*>)?\s*\([^{{]*)', prompt, re.DOTALL)
                 declaration = declaration_match.group(1) if declaration_match else ""
-                if self._verbose:
-                    print(f"Fallback parsed entry point: {entry_point}")
+                self._log(f"Fallback parsed entry point: {entry_point}")
                 return declaration, entry_point
         
         declaration_match = re.search(r'declaration:\s*(.+?)(?=\n\n|\Z)', prompt, re.DOTALL | re.IGNORECASE)
@@ -340,8 +327,7 @@ class MultiAgentModel(CodeGenerationModel):
         else:
             entry_point_match = re.search(r'fn\s+([a-zA-Z0-9_]+)(?:<[^>]*>)?\s*\(', prompt)
             entry_point = entry_point_match.group(1) if entry_point_match and entry_point_match.group(1) != "main" else "solution"
-        if self._verbose:
-            print(f"Generic parsed entry point: {entry_point}")
+        self._log(f"Generic parsed entry point: {entry_point}")
         return declaration, entry_point
     
     @property
