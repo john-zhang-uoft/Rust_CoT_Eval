@@ -69,7 +69,7 @@ class MultiAgentModel(CodeGenerationModel):
         thread_id: Optional[int] = None,
         sample_idx: Optional[int] = None,
         rust_dir: Optional[str] = None,
-        replace_generated_function_signature: bool = False
+        keep_generated_function_signature: bool = False
     ):
         """
         Initialize a multi-agent model
@@ -84,7 +84,7 @@ class MultiAgentModel(CodeGenerationModel):
             thread_id: Optional thread ID to use for this model
             sample_idx: Optional sample index to use for file naming
             rust_dir: Optional custom path to the Rust project directory
-            replace_generated_function_signature: If True, use the entire implementation including function signatures.
+            keep_generated_function_signature: If True, use the entire implementation including function signatures.
                                       If False, extract only imports from declaration and use them with implementation
         """
         self._gen_model = gen_model
@@ -96,7 +96,7 @@ class MultiAgentModel(CodeGenerationModel):
         self._thread_id = thread_id
         self._sample_idx = sample_idx
         self._rust_dir = rust_dir
-        self._replace_generated_function_signature = replace_generated_function_signature
+        self._keep_generated_function_signature = keep_generated_function_signature
         
         # Initialize agents
         self._generator = CodeRefinementAgent(gen_model, verbose=verbose)
@@ -106,7 +106,7 @@ class MultiAgentModel(CodeGenerationModel):
             sample_idx=sample_idx,
             thread_id=thread_id,
             rust_dir=rust_dir,
-            replace_generated_function_signature=replace_generated_function_signature
+            keep_generated_function_signature=keep_generated_function_signature
         )
     
     def _log(self, message: str, color: str = None, always: bool = False, attrs=None, separate_section: bool = False):
@@ -175,7 +175,7 @@ class MultiAgentModel(CodeGenerationModel):
             try:
                 feedback_list, details, successes = self._reviewer.generate_feedback(
                     prompt,
-                    "" if self._replace_generated_function_signature else declaration, 
+                    "" if self._keep_generated_function_signature else declaration, 
                     current_raw_code, 
                     entry_point,
                     n=1
@@ -229,12 +229,13 @@ class MultiAgentModel(CodeGenerationModel):
                 
             # Refine the code based on feedback - get new raw code
             try:
-                # If replace_generated_function_signature is True, don't combine with declaration 
+                # If keep_generated_function_signature is True, don't combine with declaration 
                 # since we'll use the function signatures from the implementation
-                if self._replace_generated_function_signature:
+                if self._keep_generated_function_signature:
                     # Use the implementation code directly with its own function signatures
                     combined_code = current_raw_code
                 else:
+                    # TODO: this doesn't actually remove the function signature, only imports
                     # Extract imports from declaration (everything up to the first function declaration)
                     imports_match = re.search(r'^(.*?)(?=\bfn\b)', declaration, re.DOTALL)
                     imports = imports_match.group(1).strip() if imports_match else ""
@@ -336,7 +337,7 @@ def create_multi_agent_model(
     skip_review: bool = False,
     timeout: int = DEFAULT_TIMEOUT,
     sample_idx: Optional[int] = None,
-    replace_generated_function_signature: bool = False
+    keep_generated_function_signature: bool = False
 ) -> MultiAgentModel:
     """
     Create a MultiAgentModel with specified generation and review models
@@ -354,7 +355,7 @@ def create_multi_agent_model(
         skip_review: Skip the review process
         timeout: Timeout for subprocess calls in seconds
         sample_idx: Optional sample index for file naming
-        replace_generated_function_signature: If True, use entire implementation with function signatures
+        keep_generated_function_signature: If True, use entire implementation with function signatures
     """
     gen_model = create_model(
         gen_model_type,
@@ -394,7 +395,7 @@ def create_multi_agent_model(
         verbose=verbose,
         timeout=timeout,
         sample_idx=sample_idx,
-        replace_generated_function_signature=replace_generated_function_signature
+        keep_generated_function_signature=keep_generated_function_signature
     )
     
     if verbose:
@@ -430,7 +431,7 @@ if __name__ == "__main__":
                         help="Print detailed logs")
     parser.add_argument("--skip_review", action="store_true", default=False,
                         help="Skip code review")
-    parser.add_argument("--replace_generated_function_signature", action="store_true", default=False,
+    parser.add_argument("--keep_generated_function_signature", action="store_true", default=False,
                         help="Use entire implementation with function signatures (default: False, only use imports)")
                         
     args = parser.parse_args()
@@ -456,7 +457,7 @@ if __name__ == "__main__":
         max_iterations=args.max_iterations,
         verbose=args.verbose,
         skip_review=args.skip_review,
-        replace_generated_function_signature=args.replace_generated_function_signature
+        keep_generated_function_signature=args.keep_generated_function_signature
     )
     
     print(f"Using multi-agent model: {multi_agent.model_name}")

@@ -75,7 +75,7 @@ mod tests {
         self.assertIn("add(a, b)", result)  # inside calculate_sum
         self.assertIn("a + b", result)      # inside add
         self.assertIn("n * factorial(n - 1)", result)  # inside factorial
-        print(result)
+
     def test_entry_point_variations(self):
         # Test with a different entry point variation
         rust_code = """
@@ -138,6 +138,56 @@ mod tests {
         self.assertNotIn("mod tests", result)
         self.assertNotIn("fn test_calculate_sum", result)
 
+    def test_function_called_by_main(self):
+        rust_block = """
+```rust
+```rust
+fn main() {}
 
+use std::{slice::Iter, cmp::{max, self}, mem::replace, collections::{HashSet, HashMap}, ops::Index, ascii::AsciiExt};
+use rand::Rng;
+use regex::Regex;
+use md5;
+use std::any::{Any, TypeId};
+
+fn solve_161(s: &str) -> String {
+    let mut result = String::new();
+    let mut has_letters = false;
+
+    for c in s.chars() {
+        if c.is_ascii_alphabetic() {
+            has_letters = true;
+            if c.is_ascii_lowercase() {
+                result.push(c.to_ascii_uppercase());
+            } else {
+                result.push(c.to_ascii_lowercase());
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    if !has_letters {
+        result = s.chars().rev().collect();
+    }
+
+    result
+}
+
+fn main() {
+    println!("{}", solve_161("Hello World!"));
+    println!("{}", solve_161("12345"));
+}
+```
+"""
+        result = self.parser("", rust_block, "solve_161", extract_all=True)
+        # print(result)
+        # Assert that solve_161 is only defined once
+        self.assertEqual(result.count("fn solve_161(s: &str) -> String"), 1)
+        # Assert that main is not included
+        self.assertNotIn("fn main()", result)
+        # Assert that the use of std::ascii::AsciiExt is not included
+        self.assertNotIn("use std::ascii::AsciiExt;", result)
+        
 if __name__ == "__main__":
     unittest.main() 

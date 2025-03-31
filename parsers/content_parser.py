@@ -65,17 +65,20 @@ class ContentParser:
             print(f"DEBUG - Found function: {fn_name}")
             all_functions.append(fn_content)
         
+        print(all_functions)
         # Ensure our entry point is included (in case of camel case variations)
         entry_point_found = False
         for fn_content in all_functions:
             for variation in self._entry_point_variations(entry_point):
-                if re.search(rf"\bfn\s+{re.escape(variation)}\s*\(", fn_content):
+                if fn_content.find(f"fn {variation}") != -1:
                     entry_point_found = True
+                    print(f"DEBUG - Found entry point variation: {variation}")
                     break
             if entry_point_found:
                 break
                 
         if not entry_point_found:
+            print("We didn't find a function with the entry point")
             # Try to find entry point with camel/snake case variations
             for variation in self._entry_point_variations(entry_point):
                 print(f"DEBUG - Searching for entry point variation: {variation}")

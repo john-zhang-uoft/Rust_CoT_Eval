@@ -20,14 +20,14 @@ DEFAULT_TIMEOUT = 60  # 1 minute timeout for compilation and test execution
 class RustCodeReviewerAgent(CodeGenerationModel):
     """Agent that reviews code, tests it, and provides feedback"""
     
-    def __init__(self, model: CodeGenerationModel, timeout: int = DEFAULT_TIMEOUT, sample_idx: int = 0, rust_dir: Optional[str] = None, thread_id: Optional[int] = None, replace_generated_function_signature: bool = False):
+    def __init__(self, model: CodeGenerationModel, timeout: int = DEFAULT_TIMEOUT, sample_idx: int = 0, rust_dir: Optional[str] = None, thread_id: Optional[int] = None, keep_generated_function_signature: bool = False):
         self.model = model
         self.timeout = timeout
         self.sample_idx = sample_idx  # Store the sample index for file naming
         self.thread_id = thread_id or os.getpid()  # Use process ID as default thread ID
         self.parser = ContentParser()  # Initialize ContentParser for parsing code
         self._verbose = True  # Always enable verbose logging for code reviewer agent
-        self._replace_generated_function_signature = replace_generated_function_signature  # Whether to keep function signatures in the generated code
+        self._keep_generated_function_signature = keep_generated_function_signature  # Whether to keep function signatures in the generated code
         
         # Get absolute path to project root (where this script is located)
         self.project_root = os.path.dirname(os.path.abspath(__file__))
@@ -50,7 +50,7 @@ class RustCodeReviewerAgent(CodeGenerationModel):
             raise FileNotFoundError(f"Cargo.toml not found in {self.rust_dir}")
         
         self._log(f"Using Rust project at: {self.rust_dir} with thread ID {self.thread_id}")
-        self._log(f"Replace generated function signature: {self._replace_generated_function_signature}")
+        self._log(f"Keep generated function signature: {self._keep_generated_function_signature}")
             
     def _log(self, message: str, color: str = None, always: bool = False, attrs=None, separate_section: bool = False):
         """
@@ -117,8 +117,8 @@ class RustCodeReviewerAgent(CodeGenerationModel):
         
         # Try to use ContentParser
         try:
-            self._log(f"Calling ContentParser with entry_point='{entry_point}', extract_all={self._replace_generated_function_signature}")
-            parsed_code = self.parser(prompt, raw_code, entry_point, extract_all=self._replace_generated_function_signature)
+            self._log(f"Calling ContentParser with entry_point='{entry_point}', extract_all={self._keep_generated_function_signature}")
+            parsed_code = self.parser(prompt, raw_code, entry_point, extract_all=self._keep_generated_function_signature)
             self._log(f"\nPARSE SUCCESSFUL for {entry_point}:", "green", attrs=["bold"])
             self._log("-" * 40)
             self._log(parsed_code)
@@ -167,7 +167,12 @@ class RustCodeReviewerAgent(CodeGenerationModel):
         """
         # Parse the implementation using ContentParser with correct extraction mode
         implementation = self._parse_code(implementation, original_prompt, entry_point)
-        
+        # Print the implementation
+        self._log(f"\nIMPLEMENTATION PARSED:", "cyan", attrs=["bold"])
+        self._log("-" * 40)
+        self._log(implementation)
+        self._log("-" * 40)
+
         feedbacks = []
         detail_list = []   # Use a separate list variable for review details
         successes = []
@@ -183,50 +188,49 @@ class RustCodeReviewerAgent(CodeGenerationModel):
         """Review Rust code"""
         details = {}
         
-        # Handle based on replace_generated_function_signature setting
-        if self._replace_generated_function_signature:
+        # Handle based on keep_generated_function_signature setting
+        if self._keep_generated_function_signature:
             # When we want to keep function signatures from the implementation
             self._log("Using implementation with its own function signatures (empty declaration)", "cyan")
             full_code = implementation
-            empty_declaration = ""
-        elif not declaration.strip() and implementation.strip():
-            # Backward compatibility: empty declaration but implementation exists
-            self._log("Using implementation as complete code (declaration is empty)", "cyan")
-            full_code = implementation
-            empty_declaration = ""
+            declaration = ""
         else:
             # Normal case: combine declaration and implementation
             self._log("Using declaration + implementation", "cyan")
             full_code = f"{declaration}\n{implementation}"
-            empty_declaration = declaration
+            declaration = declaration
         
         # Step 1: Check if the code compiles
-        compiles, compile_feedback, compile_details = self.check_compilation(empty_declaration, full_code)
+        compiles, compile_feedback, compile_details = self.check_compilation(declaration, full_code)
         details["compilation"] = compile_details
         
         if not compiles:
             return False, f"Compilation failed: {compile_feedback}", details
         
         # Step 2: Generate and run tests
-        tests_generated, test_code, test_gen_details = self.generate_tests(prompt, empty_declaration, full_code, entry_point)
+        tests_generated, test_code, test_gen_details = self.generate_tests(prompt, declaration, full_code, entry_point)
         details["test_generation"] = test_gen_details
         
         if not tests_generated:
             return False, f"Could not generate tests: {test_code}", details
         
         # Step 3: Run the tests
-        tests_pass, test_output, test_details = self.run_tests(empty_declaration, full_code, test_code, entry_point)
+        tests_pass, test_output, test_details = self.run_tests(declaration, full_code, test_code, entry_point)
         details["test_execution"] = test_details
         
         if not tests_pass:
             # Step 4: If tests fail, generate more detailed feedback
             detailed_feedback, analysis_details = self.generate_detailed_feedback(
-                prompt, empty_declaration, full_code, test_code, test_output
+                prompt, declaration, full_code, test_code, test_output
             )
             details["analysis"] = analysis_details
             return False, detailed_feedback, details
         
-        return True, "Code looks good. All tests passed.", details
+        feedback = "Code looks good. All tests passed."
+        if self._keep_generated_function_signature:
+            feedback += "\nHowever, remember to import no packages that are not in the original problem."
+
+        return True, feedback, details
     
     def check_compilation(self, declaration: str, implementation: str) -> Tuple[bool, str, Dict[str, Any]]:
         """Check if the code compiles"""
@@ -300,11 +304,12 @@ rust
 
 Compilation error:
 {process.stderr}
-
-Provide a brief explanation of what's wrong and how to fix it.
+"""            
+            if not self._keep_generated_function_signature:
+                error_prompt += f"""
 If there are missing imports, remind the user that their solution must match the problem description and not use any imports not listed in the problem description. Tell them to not use structs absent in the imports and list those offending structs.
 Problem description (the user's solution may only use imports listed in this description):
-{declaration}
+{declaration} 
 """
             start_time = time.time()
             error_analysis = self.model.generate_code(error_prompt, n=1)[0]
