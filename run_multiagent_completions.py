@@ -46,7 +46,8 @@ def create_multi_agent_model(
     timeout: int = 60,
     thread_id: Optional[int] = None,
     sample_idx: Optional[int] = None,
-    rust_dir: Optional[str] = None
+    rust_dir: Optional[str] = None,
+    replace_generated_function_signature: bool = False
 ) -> MultiAgentModel:
     """
     Create a MultiAgentModel with specified generation and review models
@@ -66,6 +67,7 @@ def create_multi_agent_model(
         thread_id: Unique identifier for the thread
         sample_idx: Index of the sample for file naming
         rust_dir: Optional custom path to the Rust project directory
+        replace_generated_function_signature: If True, use the entire implementation including function signatures
         
     Returns:
         A MultiAgentModel instance
@@ -111,7 +113,8 @@ def create_multi_agent_model(
         verbose=verbose,
         rust_dir=rust_dir,
         thread_id=thread_id,
-        sample_idx=sample_idx
+        sample_idx=sample_idx,
+        replace_generated_function_signature=replace_generated_function_signature
     )
     
     print(f"Using multi-agent model: {multi_agent.model_name}")
@@ -136,7 +139,8 @@ def run_multi_agent_completions(
     timeout: int = 60,
     max_workers: int = 16,
     custom_dataset: Optional[List[Dict[str, Any]]] = None,
-    rust_dir: Optional[str] = None
+    rust_dir: Optional[str] = None,
+    replace_generated_function_signature: bool = False
 ) -> None:
     """
     Run multi-agent code generation on HumanEval tasks
@@ -160,6 +164,7 @@ def run_multi_agent_completions(
         max_workers: Maximum number of concurrent workers
         custom_dataset: Optional custom dataset to use instead of HumanEvalPack
         rust_dir: Optional custom path to the Rust project directory
+        replace_generated_function_signature: If True, use the entire implementation including function signatures
     """
     
     # Set default output file if not provided
@@ -169,6 +174,7 @@ def run_multi_agent_completions(
     # Run generate_completions with the multi-agent model
     print(f"Running multi-agent generation on {task} for {language}")
     print(f"Settings: samples={samples_per_problem}, temperature={temperature}, top_p={top_p}, max_iterations={max_iterations}, timeout={timeout}s, max_workers={max_workers}")
+    print(f"Replace generated function signature: {replace_generated_function_signature}")
     print(f"Using concurrent processing with {max_workers} workers")
     
     # Load the dataset
@@ -221,7 +227,8 @@ def run_multi_agent_completions(
                 timeout=timeout,
                 thread_id=thread_id,
                 sample_idx=idx,  # Pass the sample index for file naming
-                rust_dir=rust_dir
+                rust_dir=rust_dir,
+                replace_generated_function_signature=replace_generated_function_signature
             )
             
             # Get the appropriate prompt based on the task
@@ -395,6 +402,8 @@ if __name__ == "__main__":
                        help="Maximum number of concurrent workers for processing samples")
     parser.add_argument("--rust_dir", type=str, default=None,
                         help="Custom path to the Rust project directory")
+    parser.add_argument("--replace_generated_function_signature", action="store_true",
+                        help="Replace generated function signature")
                         
     args = parser.parse_args()
 
@@ -432,5 +441,6 @@ if __name__ == "__main__":
         skip_review=args.skip_review,
         timeout=int(os.getenv("TIMEOUT", args.timeout)),
         max_workers=int(os.getenv("MAX_WORKERS", args.max_workers)),
-        rust_dir=args.rust_dir
+        rust_dir=args.rust_dir,
+        replace_generated_function_signature=args.replace_generated_function_signature
     )
