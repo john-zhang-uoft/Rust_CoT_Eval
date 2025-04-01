@@ -1,11 +1,21 @@
 from camel_converter import to_snake
 from typing import List
 import re
+from utils.logger import debug, info, warning, error, set_verbose_mode
 
 class ParseError(Exception):
     pass
 
 class ContentParser:
+    def __init__(self, verbose: bool = False):
+        """
+        Initialize the content parser
+        
+        Args:
+            verbose: Enable verbose logging if True
+        """
+        self.verbose = verbose
+        set_verbose_mode(verbose)
 
     @staticmethod
     def _entry_point_variations(entry_point: str) -> List[str]:
@@ -28,16 +38,16 @@ class ContentParser:
         Returns:
             A string containing all the non-main, non-test functions
         """
-        print(f"DEBUG - extract_all_functions - script: {script[:50]}...")
-        print(f"DEBUG - extract_all_functions - entry_point: {entry_point}")
+        debug(f"extract_all_functions - script: {script[:50]}...", self.verbose)
+        debug(f"extract_all_functions - entry_point: {entry_point}", self.verbose)
         
         # Clean up the script if it contains markdown code blocks
         if "```" in script:
             code_blocks = re.findall(r'```(?:\w+)?\s*\n(.*?)\n```', script, re.DOTALL)
-            print(f"DEBUG - code_blocks found: {len(code_blocks)}")
+            debug(f"code_blocks found: {len(code_blocks)}", self.verbose)
             if code_blocks:
                 script = code_blocks[0]
-                print(f"DEBUG - extracted code: {script[:100]}...")
+                debug(f"extracted code: {script[:100]}...", self.verbose)
         
         # Find all function definitions in the script
         function_pattern = re.compile(r'\bfn\s+([a-zA-Z0-9_]+).*?(?=\bfn\s+|\Z)', re.DOTALL)
@@ -48,7 +58,7 @@ class ContentParser:
         if test_module_start != -1:
             # Extract the script without the test module
             script_without_tests = script[:test_module_start]
-            print(f"DEBUG - Removed test module")
+            debug(f"Removed test module", self.verbose)
         else:
             script_without_tests = script
         
@@ -59,43 +69,43 @@ class ContentParser:
             
             # Skip main function
             if fn_name == "main":
-                print(f"DEBUG - Skipping main function")
+                debug(f"Skipping main function", self.verbose)
                 continue
                 
-            print(f"DEBUG - Found function: {fn_name}")
+            debug(f"Found function: {fn_name}", self.verbose)
             all_functions.append(fn_content)
         
-        print(all_functions)
+        debug(f"{all_functions}", self.verbose)
         # Ensure our entry point is included (in case of camel case variations)
         entry_point_found = False
         for fn_content in all_functions:
             for variation in self._entry_point_variations(entry_point):
                 if fn_content.find(f"fn {variation}") != -1:
                     entry_point_found = True
-                    print(f"DEBUG - Found entry point variation: {variation}")
+                    debug(f"Found entry point variation: {variation}", self.verbose)
                     break
             if entry_point_found:
                 break
                 
         if not entry_point_found:
-            print("We didn't find a function with the entry point")
+            info("We didn't find a function with the entry point", self.verbose)
             # Try to find entry point with camel/snake case variations
             for variation in self._entry_point_variations(entry_point):
-                print(f"DEBUG - Searching for entry point variation: {variation}")
+                debug(f"Searching for entry point variation: {variation}", self.verbose)
                 entry_point_pattern = re.compile(r'\bfn\s+' + re.escape(variation) + r'.*?(?=\bfn\s+|\Z)', re.DOTALL)
                 match = entry_point_pattern.search(script_without_tests)
                 if match:
-                    print(f"DEBUG - Found entry point variation: {variation}")
+                    debug(f"Found entry point variation: {variation}", self.verbose)
                     all_functions.append(match.group(0))
                     entry_point_found = True
                     break
         
         if all_functions:
             result = "\n\n".join(all_functions)
-            print(f"DEBUG - Extracted {len(all_functions)} functions")
+            debug(f"Extracted {len(all_functions)} functions", self.verbose)
             return result
         else:
-            print(f"DEBUG - No functions found")
+            debug(f"No functions found", self.verbose)
             return script
 
     def get_function_implementation(self, script: str, func_name: str) -> str:
@@ -106,24 +116,24 @@ class ContentParser:
         Note: This parser is still simplified and may not cover all edge cases (e.g., raw string literals in Rust,
         complex nested comments, macros, etc.). For a production solution, consider using a dedicated Rust parser.
         """
-        print(f"DEBUG - get_function_implementation - script: {script[:50]}...")
-        print(f"DEBUG - get_function_implementation - looking for function: {func_name}")
+        debug(f"get_function_implementation - script: {script[:50]}...", self.verbose)
+        debug(f"get_function_implementation - looking for function: {func_name}", self.verbose)
         
         # Regex to find the function declaration (naively assumes a simple signature)
         pattern = re.compile(r'\bfn\s+' + re.escape(func_name) + r'\s*\(', re.MULTILINE)
         match = pattern.search(script)
         if not match:
-            print(f"DEBUG - Function declaration not found for: {func_name}")
+            debug(f"Function declaration not found for: {func_name}", self.verbose)
             return script
 
         start_index = match.start()
         # Locate the beginning of the function body.
         body_start = script.find("{", match.end())
         if body_start == -1:
-            print("DEBUG - Opening brace not found")
+            debug("Opening brace not found", self.verbose)
             return script
 
-        print(f"DEBUG - Function signature: {script[start_index:body_start+1]}")
+        debug(f"Function signature: {script[start_index:body_start+1]}", self.verbose)
         
         # State variables to handle context.
         brace_counter = 1
@@ -182,7 +192,7 @@ class ContentParser:
 
         # Return the function body including the final closing brace
         result = script[body_start + 1:i].strip()
-        print(f"DEBUG - Extracted function body: {result}")
+        debug(f"Extracted function body: {result}", self.verbose)
         return result
 
 
@@ -203,19 +213,19 @@ class ContentParser:
         Raises:
             ParseError: If the entry point function can't be found in the content
         """
-        print(f"DEBUG - __call__ - prompt: {prompt}")
-        print(f"DEBUG - __call__ - content before extraction: {content[:100]}...")
-        print(f"DEBUG - __call__ - entry_point: {entry_point}")
-        print(f"DEBUG - __call__ - extract_all: {extract_all}")
-        print(f"DEBUG - __call__ - content has code blocks: {'```' in content}")
+        debug(f"__call__ - prompt: {prompt}", self.verbose)
+        debug(f"__call__ - content before extraction: {content[:100]}...", self.verbose)
+        debug(f"__call__ - entry_point: {entry_point}", self.verbose)
+        debug(f"__call__ - extract_all: {extract_all}", self.verbose)
+        debug(f"__call__ - content has code blocks: {'```' in content}", self.verbose)
         
         if "```" in content:
             # Extract code from markdown code blocks
             code_blocks = re.findall(r'```(?:\w+)?\s*\n(.*?)\n```', content, re.DOTALL)
-            print(f"DEBUG - code_blocks found: {len(code_blocks)}")
+            debug(f"code_blocks found: {len(code_blocks)}", self.verbose)
             if code_blocks:
                 content = code_blocks[0]
-                print(f"DEBUG - extracted code: {content[:100]}...")
+                debug(f"extracted code: {content[:100]}...", self.verbose)
         
         if extract_all:
             # Extract all non-main, non-test functions
@@ -224,11 +234,11 @@ class ContentParser:
             # Extract only the specified function implementation
             # Try to find the function with various name variations
             for ep in self._entry_point_variations(entry_point):
-                print(f"DEBUG - checking content for entry point: {ep}")
+                debug(f"checking content for entry point: {ep}", self.verbose)
                 if re.search(rf"\bfn\s+{re.escape(ep)}\s*\(", content):
-                    print(f"DEBUG - found function definition in content for: {ep}")
+                    debug(f"found function definition in content for: {ep}", self.verbose)
                     return self.get_function_implementation(content, ep)
             
-            print(f"DEBUG - no function found, raising ParseError")
+            error(f"no function found, raising ParseError")
             raise ParseError(f"Prompt is not in content:\n{content}")
 
