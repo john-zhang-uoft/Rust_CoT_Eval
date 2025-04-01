@@ -46,11 +46,11 @@ class CodeRefinementAgent(CodeGenerationModel):
         self._log(f"\nGENERATING INITIAL CODE...", "cyan", attrs=["bold"], separate_section=True)
         self._log(f"Using prompt of length {len(prompt)} characters", "cyan")
         
-        prompt = """
+        prompt = f"""
 You are a Rust programming expert. Your task is to solve the following Rust problem by implementing the function whose signature you are given.
 Do NOT change the function signature. Do not add any imports that are not already present in the problem description.
 
-f{prompt}
+{prompt}
 """
         codes = self.model.generate_code(prompt, n=n)
         

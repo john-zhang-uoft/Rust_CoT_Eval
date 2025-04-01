@@ -363,11 +363,11 @@ def run_multi_agent_completions(
         with ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as executor:
             # Submit only this batch to the executor
             future_to_idx = {executor.submit(process_sample, samples.index(sample), sample): samples.index(sample) 
-                             for sample in batch}
-            
+                            for sample in batch}
+
             try:
                 # Process results as they complete
-                for future in as_completed(future_to_idx.values()):
+                for future in as_completed(future_to_idx):  # Use the futures (keys) here
                     try:
                         result = future.result(timeout=timeout * max_iterations * 2)  # Longer timeout based on iterations
                         if result is not None:  # Skip None results (already processed)
