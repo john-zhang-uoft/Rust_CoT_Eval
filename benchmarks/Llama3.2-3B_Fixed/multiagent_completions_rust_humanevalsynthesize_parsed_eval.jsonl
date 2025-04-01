@@ -1,0 +1,16 @@
+{"task_id": "Rust/0", "results": ["passed"]}
+{"task_id": "Rust/1", "results": ["failed: compilation error"]}
+{"task_id": "Rust/2", "results": ["passed"]}
+{"task_id": "Rust/3", "results": ["failed: execution error"]}
+{"task_id": "Rust/4", "results": ["failed: execution error"]}
+{"task_id": "Rust/5", "results": ["failed: execution error"]}
+{"task_id": "Rust/6", "results": ["failed: compilation error"]}
+{"task_id": "Rust/7", "results": ["passed"]}
+{"task_id": "Rust/8", "results": ["failed: execution error"]}
+{"task_id": "Rust/9", "results": ["failed: execution error"]}
+{"task_id": "Rust/10", "results": ["failed: execution error"]}
+{"task_id": "Rust/11", "results": ["failed: compilation error"]}
+{"task_id": "Rust/12", "results": ["failed: compilation error"]}
+{"task_id": "Rust/13", "results": ["passed"]}
+{"task_id": "Rust/14", "results": ["passed"]}
+{"task_id": "Rust/15", "results": ["passed"]}
