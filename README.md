@@ -1,3 +1,3 @@
 ##TODO: 
 
-Make sure that the "raw code" code that is being refined by the generator model is actually the declaration + its implementation. Its raw code is never being executed as is - different imports and signature
+Now that we have two flows - replacing the function signature vs keeping the entire generated code by the generation function, we need to make sure that replacing the function signature works with helper functions as well. We need to do the same reordering of functions and keep all functions except main and tests for replacing the function signature.

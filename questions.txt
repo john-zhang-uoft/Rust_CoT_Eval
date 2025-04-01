@@ -1,0 +1,21 @@
+Rust/45: Given the lengths of the three sides of a triangle. Return the area of\n    the triangle rounded to 2 decimal points if the three sides form a valid triangle. \n    Otherwise return -1\n    Three sides make a valid triangle when the sum of any two sides is greater \n    than the third side.\n    \n*/\nfn triangle_area(a:i32, h:i32) -> f64{\n\n
+
+Rust/59: The helper function was not extracted by parse_completions.py
+
+Rust/63: The model is using Hashset 
+The issue lies in the fact that the `HashMap` type is being used without being imported. The error messages (`E0433` and `E0412`) indicate that the compiler cannot find the `HashMap` type in the current scope.\n\n**Fix**\n\nTo resolve this issue, you need to import the `HashMap` type from the `std::collections` module. Add the following line at the top of your code:\n```rust\nuse std::collections::HashMap;\n```\nThis will allow you to use the `HashMap` type in your code.\n\n**Note**\n\nSince the problem description does not list any imports, you should only use the `HashMap` import if it is explicitly mentioned in the problem description. If not, you should avoid using it and instead use alternative data structures or approaches that do not require additional imports.\n\nIn this case, since `HashMap` is not mentioned in the problem description, you should consider alternative solutions that do not use it. However, if you are allowed to use `HashMap`, the above fix should resolve the compilation error. \n\n**Offending Structs**\n\nThe offending struct in this case is `HashMap`. If you are not allowed to use `HashMap`, you should avoid using it and instead use alternative data structures such as arrays or vectors to implement the memoization. 
+
+Rust/70: Don't know why it didn't compile
+
+Rust/75: Helper function on top
+
+The reviewer is using packages not listed in the problem
+The reviewer says that the problem description is not provided for Rust/51
+Sometimes helper functions end up on top of the entry point, then they get removed (currently the parse_completions file doesn't even extract helpers)
+
+
+Following strict instructions is important for code generation models.
+If we say to the model to write a certain function, it should not do anything different.
+This is because in order to write high quality maintainable software, it needs to be able to plan
+for itself and actually follow through, and follow human instructions
+

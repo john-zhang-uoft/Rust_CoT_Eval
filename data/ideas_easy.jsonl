@@ -1,0 +1,24 @@
+{"description": "**Sum of Two Numbers:**\nWrite a function `fn sum(a: i32, b: i32) -> i32` that returns the sum of two integers.", "difficulty": "easy"}
+{"description": "**Find the Maximum:**\nWrite a function `fn max(a: i32, b: i32) -> i32` that returns the larger of two integers.", "difficulty": "easy"}
+{"description": "**Check if Even:**\nWrite a function `fn is_even(n: i32) -> bool` that returns `true` if the given integer is even, and `false` otherwise.", "difficulty": "easy"}
+{"description": "**String Length:**\nWrite a function `fn string_length(s: &str) -> usize` that returns the length of a given string.", "difficulty": "easy"}
+{"description": "**Reverse a String:**\nWrite a function `fn reverse_string(s: &str) -> String` that returns the reversed version of a given string.", "difficulty": "easy"}
+{"description": "**Calculate Factorial:**\nWrite a function `fn factorial(n: u32) -> u32` that calculates the factorial of a given non-negative integer.", "difficulty": "easy"}
+{"description": "**Check for Palindrome:**\nWrite a function `fn is_palindrome(s: &str) -> bool` that checks if a given string is a palindrome.", "difficulty": "easy"}
+{"description": "**Convert Celsius to Fahrenheit:**\nWrite a function `fn celsius_to_fahrenheit(celsius: f64) -> f64` that converts Celsius to Fahrenheit.", "difficulty": "easy"}
+{"description": "**Find the First Element:**\nWrite a function `fn first_element(vec: &[i32]) -> Option<i32>` that returns the first element of a vector, or `None` if the vector is empty.", "difficulty": "easy"}
+{"description": "**Sum of Vector Elements:**\nWrite a function `fn sum_vector(vec: &[i32]) -> i32` that returns the sum of all elements in a vector.", "difficulty": "easy"}
+{"description": "**Count Vowels:**\nWrite a function `fn count_vowels(s: &str) -> usize` that counts the number of vowels in a given string.", "difficulty": "easy"}
+{"description": "**Check if Prime:**\nWrite a function `fn is_prime(n: u32) -> bool` that checks if a given number is prime.", "difficulty": "easy"}
+{"description": "**Average of Vector Elements:**\nWrite a function `fn average_vector(vec: &[f64]) -> Option<f64>` that returns the average of the elements in a vector, or `None` if the vector is empty.", "difficulty": "easy"}
+{"description": "**Find the Smallest Element:**\nWrite a function `fn smallest_element(vec: &[i32]) -> Option<i32>` that returns the smallest element in a vector, or `None` if the vector is empty.", "difficulty": "easy"}
+{"description": "**Convert to Uppercase:**\nWrite a function `fn to_uppercase(s: &str) -> String` that converts a string to uppercase.", "difficulty": "easy"}
+{"description": "**Calculate Area of Circle:**\nWrite a function `fn area_of_circle(radius: f64) -> f64` that calculates the area of a circle given its radius.", "difficulty": "easy"}
+{"description": "**Find the Second Largest:**\nWrite a function `fn second_largest(vec: &[i32]) -> Option<i32>` that returns the second largest element in a vector, or `None` if the vector has less than 2 elements.", "difficulty": "easy"}
+{"description": "**Remove Duplicates:**\nWrite a function `fn remove_duplicates(vec: &[i32]) -> Vec<i32>` that removes duplicate elements from a vector.", "difficulty": "easy"}
+{"description": "**Check if Substring:**\nWrite a function `fn is_substring(main: &str, sub: &str) -> bool` that checks if a given string is a substring of another string.", "difficulty": "easy"}
+{"description": "**Fibonacci Sequence:**\nWrite a function `fn fibonacci(n: u32) -> u32` that returns the nth Fibonacci number.", "difficulty": "easy"}
+{"description": "**Count Occurrences:**\nWrite a function `fn count_occurrences(vec: &[i32], target: i32) -> usize` that counts the number of occurrences of a target element in a vector.", "difficulty": "easy"}
+{"description": "**Convert to Binary:**\nWrite a function `fn to_binary(n: u32) -> String` that converts a given unsigned integer to its binary string representation.", "difficulty": "easy"}
+{"description": "**Greatest Common Divisor (GCD):**\nWrite a function `fn gcd(a: u32, b: u32) -> u32` that calculates the greatest common divisor of two numbers.", "difficulty": "easy"}
+{"description": "**Least Common Multiple (LCM):**\nWrite a function `fn lcm(a: u32, b: u32) -> u32` that calculates the least common multiple of two numbers.", "difficulty": "easy"}

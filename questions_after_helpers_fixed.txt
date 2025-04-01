@@ -1,0 +1,5 @@
+Rust/160: "if operator.is_empty() {\n        panic!(\"Empty operator list\");\n    }\n    if operand.is_empty() {\n        panic!(\"Empty operand list\");\n    }\n    if operator.len() != operand.len() - 1 {\n        panic!(\"Operand length mismatch\");\n    }\n\n    let mut result = operand[0];\n    for i in 0..operator.len() {\n        match operator[i] {\n            \"+\" => result += operand[i + 1],\n            \"-\" => result -= operand[i + 1],\n            \"*\" => result *= operand[i + 1],\n            \"//\" => {\n                if operand[i + 1] == 0 {\n                    panic!(\"Division by zero\");\n                }\n                result /= operand[i + 1];\n            }\n            \"**\" => result = i32::pow(result, operand[i + 1] as u32),\n            _ => panic!(\"Invalid operator\"),\n        }\n    }\n    result\n}"
+The generator model renamed the function signature
+
+Rust/161: Same function defined twice 
+

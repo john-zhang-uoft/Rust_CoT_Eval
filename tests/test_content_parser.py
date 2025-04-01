@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 # Add the parent directory to the system path to import ContentParser
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from content_parser import ContentParser, ParseError
+from parsers.content_parser import ContentParser, ParseError
 
 
 class TestContentParser(unittest.TestCase):

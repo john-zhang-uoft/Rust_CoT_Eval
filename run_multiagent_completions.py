@@ -28,8 +28,11 @@ from generate_completions import (
 
 from datasets import load_dataset
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED, as_completed
 import threading
+import time
+import gc
+import math
     
 
 def create_multi_agent_model(
@@ -177,6 +180,9 @@ def run_multi_agent_completions(
             task_id_suffix = task_id.replace("/", "_").replace("\\", "_")
             output_file = f"multiagent_completions_{language}_{task}_{task_id_suffix}.jsonl"
     
+    # Get checkpoint file path
+    checkpoint_file = f"{output_file}.checkpoint"
+    
     # Run generate_completions with the multi-agent model
     print(f"Running multi-agent generation on {task} for {language}")
     print(f"Settings: samples={samples_per_problem}, temperature={temperature}, top_p={top_p}, max_iterations={max_iterations}, timeout={timeout}s, max_workers={max_workers}")
@@ -209,22 +215,51 @@ def run_multi_agent_completions(
     
     # Create a thread-safe list for processed samples
     processed_samples = []
+    completed_indices = set()
     samples_lock = threading.Lock()
     
     # Create a thread-safe tqdm progress bar
     progress_bar = tqdm(total=len(samples))
     
+    # Load checkpoint if exists
+    if os.path.exists(checkpoint_file):
+        try:
+            with jsonlines.open(checkpoint_file, "r") as reader:
+                for item in reader:
+                    processed_samples.append(item)
+                    completed_indices.add(samples.index(item))
+                    progress_bar.update(1)
+            print(f"Loaded {len(processed_samples)} samples from checkpoint")
+        except Exception as e:
+            print(f"Error loading checkpoint: {str(e)}")
+            # Continue without the checkpoint
+            processed_samples = []
+    
+    # Helper function to save checkpoint
+    def save_checkpoint(samples_to_save):
+        if not samples_to_save:
+            return
+            
+        try:
+            with jsonlines.open(checkpoint_file, "w") as writer:
+                writer.write_all(samples_to_save)
+            print(f"Checkpoint saved with {len(samples_to_save)} samples")
+        except Exception as e:
+            print(f"Error saving checkpoint: {str(e)}")
+    
     # Function to process a single sample
     def process_sample(idx, sample):
         nonlocal parse_errors
         
+        if idx in completed_indices:
+            return None  # Skip already processed samples
+            
         # Create a thread ID based on the sample index for unique file paths
         # Adding task_id to make thread_id unique across different samples
         thread_id = idx + 1000 + hash(sample["task_id"]) % 10000  # Offset to avoid potential conflicts with process IDs
         local_multi_agent = None
         
         try:
-            
             # Create a thread-local MultiAgentModel instance
             local_multi_agent = create_multi_agent_model(
                 gen_model_type=gen_model_type,
@@ -313,47 +348,57 @@ def run_multi_agent_completions(
             # Update progress bar
             progress_bar.update(1)
     
-    # Use ThreadPoolExecutor to process samples concurrently
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks to the executor
-        future_to_idx = {executor.submit(process_sample, idx, sample): idx for idx, sample in enumerate(samples)}
+    # Calculate number of batches (process in smaller groups to manage resources better)
+    remaining_samples = [s for i, s in enumerate(samples) if i not in completed_indices]
+    batch_size = min(max(1, len(remaining_samples) // 4), max_workers * 2)  # Reasonable batch size
+    batches = [remaining_samples[i:i + batch_size] for i in range(0, len(remaining_samples), batch_size)]
+    
+    print(f"Processing {len(remaining_samples)} remaining samples in {len(batches)} batches of ~{batch_size} samples each")
+    
+    # Process batches with ThreadPoolExecutor
+    for batch_idx, batch in enumerate(batches):
+        print(f"Processing batch {batch_idx+1}/{len(batches)} with {len(batch)} samples")
+        batch_results = []
         
-        try:
-            # Process results as they complete with an overall timeout
-            remaining_futures = list(future_to_idx.keys())
-            while remaining_futures:
-                # Wait for the next result for up to 5 minutes per batch
-                done_futures, remaining_futures = wait(
-                    remaining_futures, 
-                    return_when=FIRST_COMPLETED,
-                    timeout=300  # 5-minute timeout
-                )
-                
-                # Process completed futures
-                for future in done_futures:
-                    idx = future_to_idx[future]
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as executor:
+            # Submit only this batch to the executor
+            future_to_idx = {executor.submit(process_sample, samples.index(sample), sample): samples.index(sample) 
+                             for sample in batch}
+            
+            try:
+                # Process results as they complete
+                for future in as_completed(future_to_idx.values()):
                     try:
-                        result = future.result(timeout=10)  # 10-second timeout to get the result
-                        with samples_lock:
-                            processed_samples.append(result)
+                        result = future.result(timeout=timeout * max_iterations * 2)  # Longer timeout based on iterations
+                        if result is not None:  # Skip None results (already processed)
+                            batch_results.append(result)
                     except Exception as e:
+                        idx = future_to_idx.get(future)
                         print(f"Sample at index {idx} generated an exception: {str(e)}")
-                        
-                # Check if we're making progress
-                if not done_futures and remaining_futures:
-                    print("Warning: No tasks completed in the last 5 minutes. Some tasks may be stuck.")
-                    # Force cancel remaining tasks after a stuck condition is detected
-                    for future in remaining_futures:
+                
+            except KeyboardInterrupt:
+                print("\nKeyboard interrupt received, canceling all pending tasks...")
+                # Cancel all pending futures on keyboard interrupt
+                for future in future_to_idx.keys():
+                    if not future.done():
                         future.cancel()
-                    break
-        except KeyboardInterrupt:
-            print("\nKeyboard interrupt received, canceling all pending tasks...")
-            # Cancel all pending futures on keyboard interrupt
-            for future in future_to_idx.keys():
-                if not future.done():
-                    future.cancel()
-            # Let the executor's context manager handle the rest
-            raise
+                # Save checkpoint before exiting
+                all_processed = processed_samples + batch_results
+                all_processed.sort(key=lambda s: samples.index(s))
+                save_checkpoint(all_processed)
+                raise
+        
+        # Add batch results to processed samples
+        with samples_lock:
+            processed_samples.extend(batch_results)
+            # Save checkpoint after each batch
+            save_checkpoint(processed_samples)
+        
+        # Force garbage collection between batches
+        gc.collect()
+        
+        # Small delay between batches to allow system resources to stabilize
+        time.sleep(1)
     
     # Close progress bar
     progress_bar.close()
@@ -365,9 +410,17 @@ def run_multi_agent_completions(
     if verbose:
         print(f"Parse error rate: {parse_errors / len(samples):.2%}")
     
-    # Save results to file  
+    # Save results to file
     with jsonlines.open(output_file, "w") as writer:
         writer.write_all(processed_samples)
+    
+    # Remove checkpoint file after successful completion
+    if os.path.exists(checkpoint_file):
+        try:
+            os.remove(checkpoint_file)
+            print(f"Removed checkpoint file: {checkpoint_file}")
+        except Exception as e:
+            print(f"Warning: Failed to remove checkpoint file: {str(e)}")
         
     print(f"Results saved to {output_file}")
 

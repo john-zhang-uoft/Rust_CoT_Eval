@@ -1,0 +1,51 @@
+{
+  "total_problems_available": {
+    "easy": 24,
+    "medium": 23,
+    "hard": 20,
+    "creative": 10
+  },
+  "total_problems_tested": 8,
+  "total_compiled": 0,
+  "total_tests_passed": 0,
+  "overall_compile_rate": 0.0,
+  "overall_test_rate": 0.0,
+  "by_difficulty": {
+    "easy": {
+      "total": 2,
+      "compilation_success": 0,
+      "test_success": 0,
+      "exit_reasons": {},
+      "is_general": false,
+      "compilation_rate": 0.0,
+      "test_success_rate": 0.0
+    },
+    "medium": {
+      "total": 2,
+      "compilation_success": 0,
+      "test_success": 0,
+      "exit_reasons": {},
+      "is_general": false,
+      "compilation_rate": 0.0,
+      "test_success_rate": 0.0
+    },
+    "hard": {
+      "total": 2,
+      "compilation_success": 0,
+      "test_success": 0,
+      "exit_reasons": {},
+      "is_general": false,
+      "compilation_rate": 0.0,
+      "test_success_rate": 0.0
+    },
+    "creative": {
+      "total": 2,
+      "compilation_success": 0,
+      "test_success": 0,
+      "exit_reasons": {},
+      "is_general": false,
+      "compilation_rate": 0.0,
+      "test_success_rate": 0.0
+    }
+  }
+}
