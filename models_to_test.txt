@@ -1,0 +1,7 @@
+llama3.3-70b-instruct-fp8
+llama3.2-3b-instruct
+hermes3-8b
+qwen25-coder-32b-instruct
+llama3.1-8b-instruct
+deepseek-llama3.3-70b
+hermes3-70b
