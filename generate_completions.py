@@ -41,8 +41,12 @@ import jsonlines
 import termcolor
 from dotenv import load_dotenv
 from datasets import load_dataset
-from typing import List, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from tqdm import tqdm
+import threading
+import time
+import gc
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from models.code_generation_models import CodeGenerationModel, OpenAIChatModel, LambdaLabsModel
 from parsers.content_parser import ContentParser, ParseError
@@ -154,7 +158,8 @@ def generate_completions(
     samples_per_problem: int = 1,
     limit: Optional[int] = None,
     verbose: bool = False,
-    output_file: Optional[str] = None
+    output_file: Optional[str] = None,
+    max_workers: int = 16
 ):
     """
     Generate code completions for the given task and language
@@ -167,10 +172,22 @@ def generate_completions(
         limit: Optional limit on number of problems to process
         verbose: Whether to print detailed information
         output_file: Custom output file path (if None, a default is used)
+        max_workers: Maximum number of concurrent workers
     """
+    # Set default output file if not provided
+    if output_file is None:
+        output_file = f"completions_{language}_{task}.jsonl"
+    
+    # Get checkpoint file path
+    checkpoint_file = f"{output_file}.checkpoint"
+        
     # Load the dataset
     samples = [s for s in load_dataset("bigcode/humanevalpack", language)["test"]]
     print(f"Loaded {len(samples)} samples from HumanEvalPack {language} dataset")
+    
+    # Limit samples if specified
+    if limit is not None:
+        samples = samples[:limit]
     
     # Handle specific tasks
     descriptions = None
@@ -178,70 +195,186 @@ def generate_completions(
         with jsonlines.open(f"completions_{language}_humanevalexplaindescribe.jsonl", "r") as f:
             descriptions = [line["raw_generation"][0] for line in f]
     
-    # Initialize parser
-    parser = ContentParser()
+    # Create thread-safe structures
+    processed_samples = []
+    completed_indices = set()
+    samples_lock = threading.Lock()
+    
+    # Thread-safe parser errors counter
     parse_errors = 0
+    errors_lock = threading.Lock()
     
-    # Process each sample
-    for idx, sample in enumerate(tqdm(samples)):
-        if limit is not None and idx >= limit:
-            break
-            
-        # Get the appropriate prompt based on the task
-        if task == "humanevalfix":
-            prompt = get_prompt_fix(sample, language=language, mode="tests")
-        elif task == "humanevalsynthesize":
-            prompt = get_prompt_synthesize(sample, language=language)
-        elif task == "humanevalexplaindescribe":
-            prompt, docstring_len = get_prompt_explain_desc(sample, language=language)
-            gen = model.generate_code(prompt, samples_per_problem)
-            sample["raw_generation"] = gen
-            sample["generation"] = [gen_item[:docstring_len] for gen_item in gen]
-            continue  # Skip the normal parsing for this task
-        elif task == "humanevalexplainsynthesize":
-            desc = descriptions[idx]
-            prompt = get_prompt_explain_syn(sample, desc, language=language)
-        else:
-            raise ValueError(f"Unknown task: {task}")
-            
-        if verbose:
-            print(f"Processing {sample['task_id']} ({idx + 1}/{len(samples)})...")
-            
-        # Generate solutions
-        sample["raw_generation"] = model.generate_code(prompt, samples_per_problem)
-        
-        # Parse the generated solutions
+    # Create a thread-safe tqdm progress bar
+    progress_bar = tqdm(total=len(samples))
+    
+    # Load checkpoint if exists
+    if os.path.exists(checkpoint_file):
         try:
-            sample["generation"] = [
-                parser(prompt, generation_item, sample["entry_point"]) 
-                for generation_item in sample["raw_generation"]
-            ]
-        except ParseError as e:
-            parse_errors += 1
-            print(f"PARSE EXCEPTION for {sample['task_id']}: {e}")
-            sample["generation"] = [""] * samples_per_problem
-            
-        # Print details if verbose
-        if verbose:
-            for i in range(samples_per_problem):
-                print(termcolor.colored(sample["entry_point"], "yellow", attrs=["bold"]))
-                print(termcolor.colored(prompt, "yellow"))
-                print(termcolor.colored(sample["canonical_solution"], "red"))
-                print(termcolor.colored(sample["generation"][i], "green")+"\n\n")
-                
-    # Print error rate
-    if verbose:
-        print(f"Parse error rate: {parse_errors / len(samples):.2%}")
-        
-    # Save results to file
-    if output_file is None:
-        output_file = f"completions_{language}_{task}.jsonl"
-        
-    with jsonlines.open(output_file, "w") as writer:
-        writer.write_all(samples)
-        
-    print(f"Results saved to {output_file}")
+            with jsonlines.open(checkpoint_file, "r") as reader:
+                for item in reader:
+                    processed_samples.append(item)
+                    completed_indices.add(samples.index(item))
+                    progress_bar.update(1)
+            print(f"Loaded {len(processed_samples)} samples from checkpoint")
+        except Exception as e:
+            print(f"Error loading checkpoint: {str(e)}")
+            # Continue without the checkpoint
+            processed_samples = []
     
+    # Helper function to save checkpoint
+    def save_checkpoint(samples_to_save):
+        if not samples_to_save:
+            return
+            
+        try:
+            with jsonlines.open(checkpoint_file, "w") as writer:
+                writer.write_all(samples_to_save)
+            print(f"Checkpoint saved with {len(samples_to_save)} samples")
+        except Exception as e:
+            print(f"Error saving checkpoint: {str(e)}")
+    
+    # Function to process a single sample
+    def process_sample(idx, sample):
+        nonlocal parse_errors
+        
+        if idx in completed_indices:
+            return None  # Skip already processed samples
+        
+        try:
+            # Get the appropriate prompt based on the task
+            if task == "humanevalfix":
+                prompt = get_prompt_fix(sample, language=language, mode="tests")
+            elif task == "humanevalsynthesize":
+                prompt = get_prompt_synthesize(sample, language=language)
+            elif task == "humanevalexplaindescribe":
+                prompt, docstring_len = get_prompt_explain_desc(sample, language=language)
+                gen = model.generate_code(prompt, samples_per_problem)
+                sample["raw_generation"] = gen
+                sample["generation"] = [gen_item[:docstring_len] for gen_item in gen]
+                return sample  # Return early for this special case
+            elif task == "humanevalexplainsynthesize":
+                desc = descriptions[idx]
+                prompt = get_prompt_explain_syn(sample, desc, language=language)
+            else:
+                raise ValueError(f"Unknown task: {task}")
+                
+            if verbose:
+                print(f"Processing {sample['task_id']} ({idx + 1}/{len(samples)})...")
+                
+            # Generate solutions
+            sample["raw_generation"] = model.generate_code(prompt, samples_per_problem)
+            
+            # Initialize parser
+            parser = ContentParser()
+            
+            # Parse the generated solutions
+            try:
+                sample["generation"] = [
+                    parser(prompt, generation_item, sample["entry_point"], extract_all=True) 
+                    for generation_item in sample["raw_generation"]
+                ]
+            except ParseError as e:
+                with errors_lock:
+                    parse_errors += 1
+                print(f"PARSE EXCEPTION for {sample['task_id']}: {e}")
+                sample["generation"] = [""] * samples_per_problem
+                sample["parse_error"] = str(e)
+                
+            # Print details if verbose
+            if verbose:
+                for i in range(samples_per_problem):
+                    print(termcolor.colored(sample["entry_point"], "yellow", attrs=["bold"]))
+                    print(termcolor.colored(prompt, "yellow"))
+                    print(termcolor.colored(sample["canonical_solution"], "red"))
+                    print(termcolor.colored(sample["generation"][i], "green")+"\n\n")
+                    
+            return sample
+        except Exception as e:
+            import traceback
+            print(f"Error processing sample {sample['task_id']}: {str(e)}")
+            traceback.print_exc()
+            # Return the sample with an error field
+            sample["error"] = str(e)
+            return sample
+        finally:
+            # Update progress bar
+            progress_bar.update(1)
+    
+    # Calculate number of batches
+    remaining_samples = [s for i, s in enumerate(samples) if i not in completed_indices]
+    batch_size = min(max(1, len(remaining_samples) // 4), max_workers * 2)  # Reasonable batch size
+    batches = [remaining_samples[i:i + batch_size] for i in range(0, len(remaining_samples), batch_size)]
+    
+    print(f"Processing {len(remaining_samples)} remaining samples in {len(batches)} batches of ~{batch_size} samples each")
+    
+    # Process batches with ThreadPoolExecutor
+    for batch_idx, batch in enumerate(batches):
+        print(f"Processing batch {batch_idx+1}/{len(batches)} with {len(batch)} samples")
+        batch_results = []
+        
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as executor:
+            # Submit only this batch to the executor
+            future_to_idx = {executor.submit(process_sample, samples.index(sample), sample): samples.index(sample) 
+                             for sample in batch}
+            
+            try:
+                # Process results as they complete
+                for future in as_completed(future_to_idx.keys()):
+                    try:
+                        result = future.result(timeout=60)  # 1-minute timeout for generation
+                        if result is not None:  # Skip None results (already processed)
+                            batch_results.append(result)
+                    except Exception as e:
+                        idx = future_to_idx[future]
+                        print(f"Sample at index {idx} generated an exception: {str(e)}")
+                
+            except KeyboardInterrupt:
+                print("\nKeyboard interrupt received, canceling all pending tasks...")
+                # Cancel all pending futures on keyboard interrupt
+                for future in future_to_idx.keys():
+                    if not future.done():
+                        future.cancel()
+                # Save checkpoint before exiting
+                all_processed = processed_samples + batch_results
+                all_processed.sort(key=lambda s: samples.index(s))
+                save_checkpoint(all_processed)
+                raise
+        
+        # Add batch results to processed samples
+        with samples_lock:
+            processed_samples.extend(batch_results)
+            # Save checkpoint after each batch
+            save_checkpoint(processed_samples)
+        
+        # Force garbage collection between batches
+        gc.collect()
+        
+        # Small delay between batches to allow system resources to stabilize
+        time.sleep(1)
+    
+    # Close progress bar
+    progress_bar.close()
+    
+    # Sort the processed samples by their original index (to maintain order)
+    processed_samples.sort(key=lambda s: samples.index(s))
+    
+    # Print error rate
+    print(f"Parse error rate: {parse_errors / len(samples):.2%}")
+    
+    # Save results to file
+    with jsonlines.open(output_file, "w") as writer:
+        writer.write_all(processed_samples)
+    
+    # Remove checkpoint file after successful completion
+    if os.path.exists(checkpoint_file):
+        try:
+            os.remove(checkpoint_file)
+            print(f"Removed checkpoint file: {checkpoint_file}")
+        except Exception as e:
+            print(f"Warning: Failed to remove checkpoint file: {str(e)}")
+    
+    print(f"Results saved to {output_file}")
+
 
 if __name__ == '__main__':
     # Parse arguments
@@ -270,6 +403,8 @@ if __name__ == '__main__':
                         help="Print detailed information")
     parser.add_argument("--output_file", type=str, default=None,
                         help="Custom output file path")
+    parser.add_argument("--max_workers", type=int, default=16,
+                       help="Maximum number of concurrent workers for processing samples")
                         
     args = parser.parse_args()
 
@@ -286,13 +421,14 @@ if __name__ == '__main__':
     task = os.getenv("TASK", args.task)
     language = os.getenv("LANGUAGE", args.language)
     limit = int(os.getenv("LIMIT", args.limit)) if os.getenv("LIMIT") or args.limit else None
+    max_workers = int(os.getenv("MAX_WORKERS", args.max_workers))
     
     # Create the model
     model = create_model(model_type, model_name, temperature, top_p)
     
     print(f"Evaluating on {task} for {language}")
     print(f"Using model: {model.model_name}")
-    print(f"Settings: samples={samples}, temperature={temperature}, top_p={top_p}")
+    print(f"Settings: samples={samples}, temperature={temperature}, top_p={top_p}, max_workers={max_workers}")
     
     # Generate completions
     generate_completions(
@@ -302,5 +438,6 @@ if __name__ == '__main__':
         samples_per_problem=samples,
         limit=limit,
         verbose=verbose,
-        output_file=args.output_file
+        output_file=args.output_file,
+        max_workers=max_workers
     ) 
