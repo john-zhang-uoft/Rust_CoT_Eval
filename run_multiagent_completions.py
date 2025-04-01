@@ -47,7 +47,7 @@ def create_multi_agent_model(
     thread_id: Optional[int] = None,
     sample_idx: Optional[int] = None,
     rust_dir: Optional[str] = None,
-    replace_generated_function_signature: bool = False
+    keep_generated_function_signature: bool = False
 ) -> MultiAgentModel:
     """
     Create a MultiAgentModel with specified generation and review models
@@ -67,7 +67,7 @@ def create_multi_agent_model(
         thread_id: Unique identifier for the thread
         sample_idx: Index of the sample for file naming
         rust_dir: Optional custom path to the Rust project directory
-        replace_generated_function_signature: If True, use the entire implementation including function signatures
+        keep_generated_function_signature: If True, use the entire implementation including function signatures
         
     Returns:
         A MultiAgentModel instance
@@ -114,7 +114,7 @@ def create_multi_agent_model(
         rust_dir=rust_dir,
         thread_id=thread_id,
         sample_idx=sample_idx,
-        replace_generated_function_signature=replace_generated_function_signature
+        keep_generated_function_signature=keep_generated_function_signature
     )
     
     print(f"Using multi-agent model: {multi_agent.model_name}")
@@ -133,6 +133,7 @@ def run_multi_agent_completions(
     max_iterations: int = 3,
     samples_per_problem: int = 1,
     limit: Optional[int] = None,
+    task_id: Optional[str] = None,
     verbose: bool = False,
     output_file: Optional[str] = None,
     skip_review: bool = False,
@@ -140,7 +141,7 @@ def run_multi_agent_completions(
     max_workers: int = 16,
     custom_dataset: Optional[List[Dict[str, Any]]] = None,
     rust_dir: Optional[str] = None,
-    replace_generated_function_signature: bool = False
+    keep_generated_function_signature: bool = False
 ) -> None:
     """
     Run multi-agent code generation on HumanEval tasks
@@ -157,6 +158,7 @@ def run_multi_agent_completions(
         max_iterations: Maximum number of refinement iterations
         samples_per_problem: Number of samples to generate per problem
         limit: Optional limit on number of problems to process
+        task_id: Optional specific task_id to run (e.g., "HumanEval/42")
         verbose: Whether to print detailed logs
         output_file: Custom output file path (if None, a default is used)
         skip_review: Whether to skip code review when cargo/compiler is not available
@@ -164,17 +166,21 @@ def run_multi_agent_completions(
         max_workers: Maximum number of concurrent workers
         custom_dataset: Optional custom dataset to use instead of HumanEvalPack
         rust_dir: Optional custom path to the Rust project directory
-        replace_generated_function_signature: If True, use the entire implementation including function signatures
+        keep_generated_function_signature: If True, use the entire implementation including function signatures
     """
     
     # Set default output file if not provided
     if output_file is None:
         output_file = f"multiagent_completions_{language}_{task}.jsonl"
+        if task_id:
+            # If running a single task, add it to the filename
+            task_id_suffix = task_id.replace("/", "_").replace("\\", "_")
+            output_file = f"multiagent_completions_{language}_{task}_{task_id_suffix}.jsonl"
     
     # Run generate_completions with the multi-agent model
     print(f"Running multi-agent generation on {task} for {language}")
     print(f"Settings: samples={samples_per_problem}, temperature={temperature}, top_p={top_p}, max_iterations={max_iterations}, timeout={timeout}s, max_workers={max_workers}")
-    print(f"Replace generated function signature: {replace_generated_function_signature}")
+    print(f"Replace generated function signature: {keep_generated_function_signature}")
     print(f"Using concurrent processing with {max_workers} workers")
     
     # Load the dataset
@@ -187,8 +193,15 @@ def run_multi_agent_completions(
         samples = [s for s in load_dataset("bigcode/humanevalpack", language)["test"]]
         print(f"Loaded {len(samples)} samples from HumanEvalPack {language} dataset")
     
-    # Limit samples if specified
-    if limit is not None:
+    # Filter by task_id if specified
+    if task_id:
+        original_count = len(samples)
+        samples = [s for s in samples if s["task_id"] == task_id]
+        if not samples:
+            raise ValueError(f"Task ID '{task_id}' not found in the dataset")
+        print(f"Filtered to 1 sample with task_id={task_id} (from {original_count} total samples)")
+    # Limit samples if specified and no specific task_id
+    elif limit is not None:
         samples = samples[:limit]
     
     # Create a thread-safe counter for parse errors
@@ -228,7 +241,7 @@ def run_multi_agent_completions(
                 thread_id=thread_id,
                 sample_idx=idx,  # Pass the sample index for file naming
                 rust_dir=rust_dir,
-                replace_generated_function_signature=replace_generated_function_signature
+                keep_generated_function_signature=keep_generated_function_signature
             )
             
             # Get the appropriate prompt based on the task
@@ -390,6 +403,8 @@ if __name__ == "__main__":
                         help="Number of samples to generate per problem")
     parser.add_argument("--limit", type=int, default=None,
                         help="Limit the number of problems to process (defaults to all)")
+    parser.add_argument("--task_id", type=str, default=None,
+                        help="Run on a specific task ID only (e.g., 'HumanEval/42')")
     parser.add_argument("--verbose", action="store_true",
                         help="Print detailed information")
     parser.add_argument("--output_file", type=str, default=None,
@@ -402,8 +417,8 @@ if __name__ == "__main__":
                        help="Maximum number of concurrent workers for processing samples")
     parser.add_argument("--rust_dir", type=str, default=None,
                         help="Custom path to the Rust project directory")
-    parser.add_argument("--replace_generated_function_signature", action="store_true",
-                        help="Replace generated function signature")
+    parser.add_argument("--keep_generated_function_signature", action="store_true",
+                        help="Keeps generated function signature")
                         
     args = parser.parse_args()
 
@@ -422,6 +437,7 @@ if __name__ == "__main__":
     task = os.getenv("TASK", args.task)
     language = os.getenv("LANGUAGE", args.language)
     limit = int(os.getenv("LIMIT", args.limit)) if os.getenv("LIMIT") or args.limit else None
+    task_id = os.getenv("TASK_ID", args.task_id)
     
     # Run multi-agent completions
     run_multi_agent_completions(
@@ -436,11 +452,12 @@ if __name__ == "__main__":
         max_iterations=args.max_iterations,
         samples_per_problem=samples,
         limit=limit,
+        task_id=task_id,
         verbose=verbose,
         output_file=args.output_file,
         skip_review=args.skip_review,
         timeout=int(os.getenv("TIMEOUT", args.timeout)),
         max_workers=int(os.getenv("MAX_WORKERS", args.max_workers)),
         rust_dir=args.rust_dir,
-        replace_generated_function_signature=args.replace_generated_function_signature
+        keep_generated_function_signature=args.keep_generated_function_signature
     )
