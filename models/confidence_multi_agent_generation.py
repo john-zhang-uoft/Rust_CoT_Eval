@@ -151,6 +151,7 @@ class ConfidenceMultiAgentModel:
         
         # Initialize full_code with empty string as default
         full_code = ""
+        code_that_compiles = ""
         
         planner_confidence, coder_confidence, tester_confidence = -1, -1, -1
         # Phase 1: Planning
@@ -175,18 +176,18 @@ class ConfidenceMultiAgentModel:
                 planner_response, 
                 prompt
             )
-            
+
             self._log(f"Planner confidence: {planner_confidence}/100", "cyan")
             self._log(f"Planner explanation: {planner_explanation}", "cyan")
             
             # If planner has very low confidence, try again
-            if planner_confidence < self.low_confidence_threshold:
-                self._log(f"Planner confidence too low ({planner_confidence}). Restarting planning...", "yellow", always=True)
-                planning_attempts += 1
-                if planning_attempts >= self.max_planning_attempts:
-                    exit_reason = "planning_confidence_too_low"
-                    break
-                continue
+            # if planner_confidence < self.low_confidence_threshold:
+            #     self._log(f"Planner confidence too low ({planner_confidence}). Restarting planning...", "yellow", always=True)
+            #     planning_attempts += 1
+            #     if planning_attempts >= self.max_planning_attempts:
+            #         exit_reason = "planning_confidence_too_low"
+            #         break
+            #     continue
             
             # Phase 2: Initial coding
             self._log(f"\n{'='*80}\nPHASE 2: INITIAL CODING\n{'='*80}", "blue", always=True)
@@ -217,7 +218,8 @@ Implement the solution in Rust according to this declaration:
             self._log(f"Coder explanation: {coder_explanation}", "cyan")
             
             current_coder_output = initial_coder_output
-            
+
+            compilation_black_board = ""
             # Phase 3: Iterative refinement
             while iterations < self.max_iterations:
                 self._log(f"\n{'='*80}\nPHASE 3: ITERATION {iterations+1}/{self.max_iterations}\n{'='*80}", "blue", always=True)
@@ -238,7 +240,7 @@ Implement the solution in Rust according to this declaration:
                 # Step 1: Check if the code compiles
                 self._log(f"\nSTEP 1: CHECKING COMPILATION...", "cyan")
                 compiles, compile_feedback, compile_details = self.tester.check_compilation(declaration, full_code)
-                
+                compilation_black_board += compile_feedback
                 if not compiles:
                     self._log(f"Compilation failed: {compile_feedback}", "red")
                     
@@ -265,7 +267,7 @@ Implement the solution in Rust according to this declaration:
                         )[0]
                         
                         # Check coder confidence in refined code
-                        refinement_prompt = f"Refine code based on compilation feedback: {compile_feedback}"
+                        refinement_prompt = f"Refine code based on compilation feedback: {compilation_black_board}"
                         coder_confidence, coder_explanation = self.confidence_checker.check_confidence(
                             coder_system_prompt,
                             refined_code,
@@ -281,8 +283,10 @@ Implement the solution in Rust according to this declaration:
                     else:
                         success = False
                         exit_reason = "compilation_failed"
+                        full_code = code_that_compiles
                         break
                 
+                code_that_compiles = full_code
                 # Step 2: Generate tests
                 self._log(f"\nSTEP 2: GENERATING TESTS...", "cyan")
                 tests_generated, test_code, test_gen_details = self.tester.generate_tests(
