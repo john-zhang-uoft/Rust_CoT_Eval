@@ -25,13 +25,13 @@ You are a Rust quality assurance expert.
 Your task is to review a Rust code implementation and provide feedback on its correctness.
 """
 
-    def __init__(self, model: CodeGenerationModel, timeout: int = DEFAULT_TIMEOUT, sample_idx: int = 0, rust_dir: Optional[str] = None, thread_id: Optional[int] = None, keep_generated_function_signature: bool = False):
+    def __init__(self, model: CodeGenerationModel, timeout: int = DEFAULT_TIMEOUT, sample_idx: int = 0, rust_dir: Optional[str] = None, thread_id: Optional[int] = None, keep_generated_function_signature: bool = False, verbose: bool = True):
         self.model = model
         self.timeout = timeout
         self.sample_idx = sample_idx  # Store the sample index for file naming
         self.thread_id = thread_id or os.getpid()  # Use process ID as default thread ID
         self.parser = ContentParser()  # Initialize ContentParser for parsing code
-        self._verbose = True  # Always enable verbose logging for code reviewer agent
+        self._verbose = verbose
         self._keep_generated_function_signature = keep_generated_function_signature  # Whether to keep function signatures in the generated code
         
         # Get absolute path to project root (where this script is located)

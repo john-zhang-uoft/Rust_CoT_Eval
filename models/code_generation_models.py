@@ -21,12 +21,7 @@ class CodeGenerationModel(ABC):
             List of generated code completions
         """
         pass
-    
-    @abstractmethod
-    def generate_chat_completion(self, messages: List[Dict[str, str]], system_prompt: str = None) -> str:
-        """Generate a chat completion using OpenAI Chat API"""
-        pass
-    
+
     @property
     @abstractmethod
     def model_name(self) -> str:
