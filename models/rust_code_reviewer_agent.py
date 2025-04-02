@@ -79,7 +79,7 @@ Your task is to review a Rust code implementation and provide feedback on its co
             if separate_section:
                 print("-" * 40)
             
-    def _parse_code(self, raw_code: str, prompt: str, entry_point: str) -> str:
+    def parse_code(self, raw_code: str, prompt: str, entry_point: str) -> str:
         """
         Parse code using ContentParser to extract clean implementation
         
@@ -158,14 +158,13 @@ Your task is to review a Rust code implementation and provide feedback on its co
         """
         # Not implemented
         raise NotImplementedError("RustCodeReviewerAgent does not support code generation")
-    
-    
+       
     def generate_feedback(self, original_prompt: str, declaration: str, implementation: str, entry_point: str, n: int = 1) -> Tuple[List[str], List[Any], List[bool]]:
         """
         Review the provided code implementation and return a list with the feedback
         """
         # Parse the implementation using ContentParser with correct extraction mode
-        implementation = self._parse_code(implementation, original_prompt, entry_point)
+        implementation = self.parse_code(implementation, original_prompt, entry_point)
         # Print the implementation
         self._log(f"\nIMPLEMENTATION PARSED:", "cyan", attrs=["bold"])
         self._log(implementation, separate_section=True)

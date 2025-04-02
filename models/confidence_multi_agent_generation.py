@@ -67,6 +67,7 @@ class ConfidenceMultiAgentModel:
         max_planning_attempts: int = 2,
         confidence_threshold: int = 70,
         low_confidence_threshold: int = 30,
+        keep_generated_function_signature: bool = True,
         verbose: bool = False
     ):
         """
@@ -88,12 +89,13 @@ class ConfidenceMultiAgentModel:
         self.max_planning_attempts = max_planning_attempts
         self.confidence_threshold = confidence_threshold
         self.low_confidence_threshold = low_confidence_threshold
+        self.keep_generated_function_signature = keep_generated_function_signature
         self.verbose = verbose
         
         # Initialize agents
         self.planner = PlannerAgent(planner_model, verbose=verbose)
         self.coder = CodeRefinementAgent(coder_model, verbose=verbose)
-        self.tester = RustCodeReviewerAgent(tester_model, verbose=verbose)
+        self.tester = RustCodeReviewerAgent(tester_model, verbose=verbose, keep_generated_function_signature=keep_generated_function_signature)
         self.test_checker = TesterCheckerAgent(tester_model, language=language, verbose=verbose)
         
         # Initialize a single confidence checker instance for all agents
@@ -147,6 +149,7 @@ class ConfidenceMultiAgentModel:
         success = False
         exit_reason = "max_iterations_reached"
         
+        planner_confidence, coder_confidence, tester_confidence = -1, -1, -1
         # Phase 1: Planning
         while planning_attempts < self.max_planning_attempts:
             self._log(f"\n{'='*80}\nPHASE 1: PLANNING (Attempt {planning_attempts+1}/{self.max_planning_attempts})\n{'='*80}", "blue", always=True)
@@ -190,28 +193,41 @@ Implement the solution in Rust according to this declaration:
 {declaration}
 """
             
-            initial_code = self.coder.generate_code(coding_prompt)[0]
+            initial_coder_output = self.coder.generate_code(coding_prompt)[0]
             
             # Check coder confidence
             coder_system_prompt = self.coder.system_prompt
             coder_confidence, coder_explanation = self.confidence_checker.check_confidence(
                 coder_system_prompt,
-                initial_code,
+                initial_coder_output,
                 coding_prompt
             )
             
             self._log(f"Coder confidence: {coder_confidence}/100", "cyan")
             self._log(f"Coder explanation: {coder_explanation}", "cyan")
             
-            current_code = initial_code
+            current_coder_output = initial_coder_output
             
             # Phase 3: Iterative refinement
             while iterations < self.max_iterations:
                 self._log(f"\n{'='*80}\nPHASE 3: ITERATION {iterations+1}/{self.max_iterations}\n{'='*80}", "blue", always=True)
                 
+                current_extracted_code = self.tester.parse_code(current_coder_output, prompt, entry_point)
+
+                if self.keep_generated_function_signature:
+                    # When we want to keep function signatures from the implementation
+                    self._log("Using implementation with its own function signatures (empty declaration)", "cyan")
+                    full_code = current_extracted_code
+                    declaration = ""
+                else:
+                    # Normal case: combine declaration and implementation
+                    self._log("Using declaration + implementation", "cyan")
+                    full_code = f"{declaration}\n{current_extracted_code}"
+                    declaration = declaration
+                    
                 # Step 1: Check if the code compiles
                 self._log(f"\nSTEP 1: CHECKING COMPILATION...", "cyan")
-                compiles, compile_feedback, compile_details = self.tester.check_compilation(declaration, current_code)
+                compiles, compile_feedback, compile_details = self.tester.check_compilation(declaration, full_code)
                 
                 if not compiles:
                     self._log(f"Compilation failed: {compile_feedback}", "red")
@@ -219,7 +235,7 @@ Implement the solution in Rust according to this declaration:
                     # Store iteration data
                     iteration_data = {
                         "iteration": iterations,
-                        "code": current_code,
+                        "code": full_code,
                         "feedback": compile_feedback,
                         "success": False,
                         "compilation": compile_details,
@@ -235,7 +251,7 @@ Implement the solution in Rust according to this declaration:
                     if iterations < self.max_iterations - 1:
                         self._log(f"\nRefining code after compilation error...", "cyan")
                         refined_code = self.coder.refine_code(
-                            prompt, current_code, compile_feedback
+                            prompt, full_code, compile_feedback
                         )[0]
                         
                         # Check coder confidence in refined code
@@ -249,7 +265,7 @@ Implement the solution in Rust according to this declaration:
                         self._log(f"Coder confidence in refined code: {coder_confidence}/100", "cyan")
                         self._log(f"Coder explanation: {coder_explanation}", "cyan")
                         
-                        current_code = refined_code
+                        current_coder_output = refined_code
                         iterations += 1
                         continue
                     else:
@@ -260,7 +276,7 @@ Implement the solution in Rust according to this declaration:
                 # Step 2: Generate tests
                 self._log(f"\nSTEP 2: GENERATING TESTS...", "cyan")
                 tests_generated, test_code, test_gen_details = self.tester.generate_tests(
-                    prompt, declaration, current_code, entry_point
+                    prompt, declaration, full_code, entry_point
                 )
                 
                 if not tests_generated:
@@ -269,7 +285,7 @@ Implement the solution in Rust according to this declaration:
                     # Store iteration data
                     iteration_data = {
                         "iteration": iterations,
-                        "code": current_code,
+                        "code": full_code,
                         "feedback": f"Test generation failed: {test_code}",
                         "success": False,
                         "compilation": compile_details,
@@ -290,7 +306,7 @@ Implement the solution in Rust according to this declaration:
                 # Step 3: Check test quality
                 self._log(f"\nSTEP 3: CHECKING TEST QUALITY...", "cyan")
                 test_quality_feedback = self.test_checker.check_tests(
-                    prompt, declaration, current_code, test_code, entry_point
+                    prompt, declaration, full_code, test_code, entry_point
                 )
                 self._log(f"Test quality feedback: {test_quality_feedback}", "cyan")
                 
@@ -302,7 +318,7 @@ Feedback on your tests:
 {test_quality_feedback}
 """
                 tests_refined, refined_test_code, refined_test_details = self.tester.generate_tests(
-                    prompt, declaration, current_code, entry_point, extra_instructions=extra_instructions
+                    prompt, declaration, full_code, entry_point, extra_instructions=extra_instructions
                 )
                 
                 if not tests_refined:
@@ -316,7 +332,7 @@ Feedback on your tests:
                 tester_confidence, tester_explanation = self.confidence_checker.check_confidence(
                     tester_system_prompt,
                     refined_test_code,
-                    prompt
+                    extra_instructions
                 )
                 
                 self._log(f"Tester confidence in tests: {tester_confidence}/100", "cyan")
@@ -325,7 +341,7 @@ Feedback on your tests:
                 # Step 5: Run tests
                 self._log(f"\nSTEP 5: RUNNING TESTS...", "cyan")
                 tests_pass, test_output, test_details = self.tester.run_tests(
-                    declaration, current_code, refined_test_code, entry_point
+                    declaration, full_code, refined_test_code, entry_point
                 )
                 
                 # Store overall feedback
@@ -334,7 +350,7 @@ Feedback on your tests:
                 else:
                     # Generate detailed feedback for test failures
                     detailed_feedback, analysis_details = self.tester.generate_detailed_feedback(
-                        prompt, declaration, current_code, refined_test_code, test_output
+                        prompt, declaration, full_code, refined_test_code, test_output
                     )
                     feedback = detailed_feedback
                     test_details["analysis"] = analysis_details
@@ -342,7 +358,7 @@ Feedback on your tests:
                 # Store iteration data
                 iteration_data = {
                     "iteration": iterations,
-                    "code": current_code,
+                    "code": full_code,
                     "feedback": feedback,
                     "success": tests_pass,
                     "compilation": compile_details,
@@ -383,7 +399,7 @@ Feedback on your tests:
                 if iterations < self.max_iterations - 1:
                     self._log(f"\nRefining code based on test failures...", "cyan")
                     refined_code = self.coder.refine_code(
-                        prompt, current_code, feedback
+                        prompt, full_code, feedback
                     )[0]
                     
                     # Check coder confidence in refined code
@@ -397,7 +413,7 @@ Feedback on your tests:
                     self._log(f"Coder confidence in refined code: {coder_confidence}/100", "cyan")
                     self._log(f"Coder explanation: {coder_explanation}", "cyan")
                     
-                    current_code = refined_code
+                    current_coder_output = refined_code
                 
                 iterations += 1
             
@@ -423,7 +439,7 @@ Feedback on your tests:
             "final_confidence": final_confidence
         }
         
-        return [current_code], generation_details
+        return [full_code], generation_details
     
     @property
     def model_name(self) -> str:
@@ -521,6 +537,8 @@ if __name__ == "__main__":
                         help="Output file path (default: confidence_multi_agent_results_{language}.jsonl)")
     parser.add_argument("--limit", type=int, default=None,
                         help="Limit the number of samples to process")
+    parser.add_argument("--keep_generated_function_signature", type=bool, default=True,
+                        help="Keep the generated function signature")
     parser.add_argument("--verbose", action="store_true",
                         help="Print detailed logs")
                         
@@ -551,6 +569,7 @@ if __name__ == "__main__":
         language=args.language,
         max_iterations=args.max_iterations,
         max_planning_attempts=args.max_planning_attempts,
+        keep_generated_function_signature=args.keep_generated_function_signature,
         verbose=args.verbose
     )
     

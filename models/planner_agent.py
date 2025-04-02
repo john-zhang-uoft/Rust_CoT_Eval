@@ -4,6 +4,7 @@ from typing import Dict, Any
 
 import termcolor
 from models.code_generation_models import CodeGenerationModel
+from parsers.json_parser import parse_json, JSONParseError
 
 class PlannerAgent:
     """Agent responsible for planning, writing pseudocode, evaluating difficulty and setting termination conditions"""
@@ -25,24 +26,46 @@ class PlannerAgent:
 
     def extract_json_from_response(self, response: str) -> Dict[str, Any]:
         """
-        Extract JSON from response
-        """
-        json_match = re.search(r'```json\s*({.*?})\s*```', response, re.DOTALL)
-        if json_match:
-            plan_data = json.loads(json_match.group(1))
-        else:
-            json_match = re.search(r'{[\s\S]*"pseudocode"[\s\S]*"difficulty"[\s\S]*"termination_conditions"[\s\S]*"confidence"[\s\S]*}', response)
-            if json_match:
-                plan_data = json.loads(json_match.group(0))
-            else:
-                raise ValueError("Could not extract JSON from response")
+        Extract JSON from response using the json_parser module
         
-        # Validate required fields
-        for field in ["pseudocode", "difficulty", "confidence"]:
-            if field not in plan_data:
-                plan_data[field] = "Not specified"
+        Args:
+            response: The raw response from the model
             
-        return plan_data
+        Returns:
+            Dictionary with the parsed JSON data
+        """
+        required_fields = ["pseudocode", "difficulty", "confidence"]
+        default_values = {
+            "pseudocode": "Could not parse pseudocode",
+            "difficulty": 3,  # Medium difficulty as default
+            "confidence": 50  # Medium confidence as default
+        }
+        
+        try:
+            if self._verbose:
+                print(termcolor.colored("Using JSONParser to extract data from response", "cyan"))
+            
+            # Use the json_parser module to extract the JSON
+            plan_data = parse_json(response,
+                required_fields=required_fields,
+                default_values=default_values,
+                verbose=self._verbose
+            )
+            
+            return plan_data
+            
+        except JSONParseError as e:
+            if self._verbose:
+                print(termcolor.colored(f"JSON parsing error: {str(e)}", "red"))
+                print(f"Raw response: {response}")
+            
+            # Create a default response with the error
+            return {
+                "pseudocode": "Could not parse pseudocode from response. Please check the raw response.",
+                "difficulty": 3,
+                "confidence": 50,
+                "parse_error": str(e)
+            }
 
     def create_plan(self, prompt: str, declaration: str, entry_point: str) -> Dict[str, Any]:
         """
@@ -72,8 +95,10 @@ Think step by step about the completion of the function, then provide your respo
   "confidence": number between 0-100
 }}
 """
+
         response = self._model.generate_code(planning_prompt, self.system_prompt)
-        
+        response = response[0]
+
         if self._verbose:
             print(termcolor.colored(f"Planner response: {response}", "cyan"))
         
@@ -84,7 +109,7 @@ Think step by step about the completion of the function, then provide your respo
         
         except Exception as e:
             if self._verbose:
-                print(termcolor.colored(f"Error parsing planner response: {str(e)}", "red"))
+                print(termcolor.colored(f"Error processing planner response: {str(e)}", "red"))
                 print(f"Response was: {response}")
             return {
                 "pseudocode": "Could not parse pseudocode",
@@ -99,8 +124,13 @@ Think step by step about the completion of the function, then provide your respo
         
         Args:
             prompt: The problem statement
+            declaration: The function declaration
+            entry_point: The function name
+            feedback: Feedback on the previous plan
+            
+        Returns:
+            Dictionary containing updated pseudocode, difficulty assessment, and termination conditions
         """
-
         planning_prompt = f"""
 A team tried to solve the following problem:
 {prompt}
@@ -124,6 +154,7 @@ Think step by step about the completion of the function, then provide your respo
 }}
 """
         response = self._model.generate_code(planning_prompt, self.system_prompt)
+        response = response[0] if isinstance(response, list) else response
         
         if self._verbose:
             print(termcolor.colored(f"Planner response: {response}", "cyan"))

@@ -9,6 +9,7 @@ import termcolor
 import json
 
 from models.code_generation_models import CodeGenerationModel
+from parsers.json_parser import parse_json, JSONParseError
 
 class ConfidenceChecker:
     """
@@ -99,26 +100,35 @@ Think step by step about your response and provide a confidence score between 0 
         if self._verbose:
             self._log(f"Confidence checker response: {response}", "cyan")
         
-        # Extract the confidence score and explanation from the response
-        confidence_data = self.extract_json_from_response(response)
-        confidence = confidence_data["confidence"]
-        
-        return confidence, response
-    
-    def extract_json_from_response(self, response: str) -> Dict[str, Any]:
-        """
-        Extract JSON from response
-        """
-        json_match = re.search(r'```json\s*({.*?})\s*```', response, re.DOTALL)
-        if json_match:
-            plan_data = json.loads(json_match.group(1))
-        else:
-            json_match = re.search(r'{[\s\S]*"confidence"[\s\S]*}', response)
-            if json_match:
-                plan_data = json.loads(json_match.group(0))
-            else:
-                raise ValueError("Could not extract JSON from response")
+        # Extract the confidence score from the response
+        try:
+            # Use the JSON parser to extract the confidence score
+            confidence_data = parse_json(
+                response, 
+                required_fields=["confidence"], 
+                default_values={"confidence": 50},
+                verbose=self._verbose
+            )
+            confidence = confidence_data["confidence"]
             
-        return plan_data
+            # Ensure confidence is an integer between 0 and 100
+            if isinstance(confidence, str) and confidence.isdigit():
+                confidence = int(confidence)
+            elif not isinstance(confidence, int):
+                try:
+                    confidence = int(float(confidence))
+                except (ValueError, TypeError):
+                    self._log(f"Could not convert confidence to integer: {confidence}", "red")
+                    confidence = 50  # Default to medium confidence
+            
+            # Clamp to range 0-100
+            confidence = max(0, min(100, confidence))
+            
+            return confidence, response
+            
+        except JSONParseError as e:
+            self._log(f"Error extracting confidence score: {str(e)}", "red")
+            # Return a default confidence score of 50 (medium confidence)
+            return 50, response
     
  
