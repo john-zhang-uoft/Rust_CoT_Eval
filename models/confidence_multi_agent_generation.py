@@ -154,8 +154,15 @@ class ConfidenceMultiAgentModel:
         while planning_attempts < self.max_planning_attempts:
             self._log(f"\n{'='*80}\nPHASE 1: PLANNING (Attempt {planning_attempts+1}/{self.max_planning_attempts})\n{'='*80}", "blue", always=True)
             
-            # Get plan from planner agent
-            plan_data = self.planner.create_plan(prompt, declaration, entry_point)
+            # Get plan from planner agent - use refine_plan if not first attempt
+            if planning_attempts == 0:
+                plan_data = self.planner.create_plan(prompt, declaration, entry_point)
+            else:
+                # Get feedback from the latest iteration
+                latest_iteration = iterations_data[-1] if iterations_data else None
+                feedback = latest_iteration.get("feedback", "") if latest_iteration else ""
+                self._log(f"Using feedback from latest iteration to refine plan: {feedback}", "cyan")
+                plan_data = self.planner.refine_plan(prompt, declaration, entry_point, feedback)
             
             # Check planner confidence
             planner_system_prompt = self.planner.system_prompt
