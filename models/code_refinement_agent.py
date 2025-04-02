@@ -85,10 +85,11 @@ Old Implementation:
 Feedback from Code Review:
 {feedback}
 
-Please provide a fixed version of the code that addresses all the issues mentioned in the feedback.
+Provide a fixed version of the code that addresses all the issues mentioned in the feedback.
 Only output the complete, corrected function with no additional explanation.
 Do not include tests in your response. Only include the function.
 The function name and signature should not change from the original problem.
+If the code currently does not compile, you must fix all the compilation errors!!!
 """
         self._log(f"Created refinement prompt of length {len(refinement_prompt)} characters", "cyan")
         

@@ -54,7 +54,7 @@ def process_code(code: str, entry_point: str) -> str:
     
     return result
 
-def parse_completions(input_file, output_file, verbose=False):
+def parse_completions(input_file, output_file, verbose=False, generation_field_name="raw_generation"):
     """
     Parse raw completions from input_file and save the parsed results to output_file
     """
@@ -71,8 +71,8 @@ def parse_completions(input_file, output_file, verbose=False):
         if verbose:
             print(f"Processing sample {idx}")
             
-        if "raw_generation" not in sample:
-            print(f"Warning: No raw_generation field in sample {idx}")
+        if generation_field_name not in sample:
+            print(f"Warning: No {generation_field_name} field in sample {idx}")
             continue
             
         if "entry_point" not in sample:
@@ -82,7 +82,7 @@ def parse_completions(input_file, output_file, verbose=False):
         # Parse the generated solutions
         try:
             # Handle raw_generation which might be a list of lists or just a list
-            raw_gen = sample["raw_generation"]
+            raw_gen = sample[generation_field_name]
             if isinstance(raw_gen, list) and len(raw_gen) > 0:
                 if isinstance(raw_gen[0], list):
                     # If it's a list of lists, take the first list
@@ -106,7 +106,24 @@ def parse_completions(input_file, output_file, verbose=False):
                         processed_generations.append("")
                 
                 sample["generation"] = processed_generations
-                
+            
+            elif isinstance(raw_gen, str):
+                processed_generations = []
+                try:
+                    # Skip ContentParser and directly use process_code
+                    # This will only rearrange functions without extracting implementations
+                    processed_code = process_code(raw_gen, sample["entry_point"])
+                    if verbose:
+                        print(f"Processed code:\n{processed_code}...")
+                    processed_generations.append(processed_code)
+                except Exception as e:
+                    if verbose:
+                        print(f"ERROR for {sample.get('task_id', f'sample {idx}')}:")
+                        print(f"Raw generation: {raw_gen[:200]}...")  # Print first 200 chars
+                        print(f"Error: {e}")
+                    processed_generations.append("")
+
+                sample["generation"] = processed_generations
             else:
                 if verbose:
                     print(f"Warning: Invalid raw_generation format for sample {idx}")
@@ -117,11 +134,11 @@ def parse_completions(input_file, output_file, verbose=False):
             if verbose:
                 print(f"TOP LEVEL ERROR for {sample.get('task_id', f'sample {idx}')}:")
                 print(f"Error: {e}")
-                if "raw_generation" in sample:
+                if generation_field_name in sample:
                     print(f"Raw generation type: {type(sample['raw_generation'])}")
-                    if isinstance(sample["raw_generation"], list):
+                    if isinstance(sample[generation_field_name], list):
                         print(f"Raw generation length: {len(sample['raw_generation'])}")
-                        if len(sample["raw_generation"]) > 0:
+                        if len(sample[generation_field_name]) > 0:
                             print(f"First item type: {type(sample['raw_generation'][0])}")
             sample["generation"] = [""]
     
@@ -139,7 +156,7 @@ if __name__ == "__main__":
     parser.add_argument("input_file", help="Input JSONL file containing raw completions")
     parser.add_argument("--output_file", help="Output JSONL file (defaults to input_file with '_parsed' suffix)")
     parser.add_argument("--verbose", action="store_true", help="Print detailed error messages")
-    
+    parser.add_argument("--generation_field_name", default="raw_generation", help="Field name for the generation in the input file")
     args = parser.parse_args()
     
     # Set default output file if not provided
@@ -147,4 +164,4 @@ if __name__ == "__main__":
         base_name = os.path.splitext(args.input_file)[0]
         args.output_file = f"{base_name}_parsed.jsonl"
     
-    parse_completions(args.input_file, args.output_file, args.verbose)
+    parse_completions(args.input_file, args.output_file, args.verbose, args.generation_field_name)

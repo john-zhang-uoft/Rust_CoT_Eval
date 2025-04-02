@@ -305,7 +305,8 @@ Problem description (the user's solution may only use imports listed in this des
 {declaration} 
 """
             start_time = time.time()
-            error_analysis = self.model.generate_code(error_prompt, system_prompt=self.system_prompt, n=1)[0]
+            error_analysis = process.stderr
+            error_analysis = error_analysis + self.model.generate_code(error_prompt, system_prompt=self.system_prompt, n=1)[0]
             details["analysis_duration"] = time.time() - start_time
             details["error_analysis"] = error_analysis
             

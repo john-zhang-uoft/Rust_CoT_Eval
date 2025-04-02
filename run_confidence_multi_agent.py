@@ -81,7 +81,7 @@ def process_sample(args, sample_with_idx, is_verbose=False):
             "final_code": final_code,
             "success": generation_details.get("success", False),
             "exit_reason": generation_details.get("exit_reason", "unknown"),
-            # "iterations": generation_details.get("iterations_data", []),
+            "iterations": generation_details.get("iterations_data", []),
             "final_confidence": generation_details.get("final_confidence", {}),
             "canonical_solution": sample.get("canonical_solution", ""),
             "process_id": process_id,
@@ -119,8 +119,15 @@ def run_parallel(args):
         List of results
     """
     # Load dataset
-    samples = [s for s in load_dataset("bigcode/humanevalpack", args.language)["test"]]
-    print(f"Loaded {len(samples)} samples from HumanEvalPack {args.language} dataset")
+    if args.dataset_path:
+        print(f"Loading custom dataset from {args.dataset_path}")
+        with jsonlines.open(args.dataset_path) as reader:
+            samples = list(reader)
+    else:
+        print(f"Loading HumanEvalPack {args.language} dataset")
+        samples = [s for s in load_dataset("bigcode/humanevalpack", args.language)["test"]]
+    
+    print(f"Loaded {len(samples)} samples")
     
     # Limit samples if requested
     if args.limit is not None:
@@ -184,6 +191,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Parallel confidence-based multi-agent code generation")
     parser.add_argument("--language", type=str, default="rust", choices=["rust"],
                         help="Programming language (only Rust supported currently)")
+    parser.add_argument("--dataset_path", type=str, default=None,
+                        help="Path to custom dataset JSONL file (if not provided, uses HumanEval)")
     parser.add_argument("--planner_model_type", type=str, default="lambdalabs",
                         choices=["openai", "lambdalabs"],
                         help="Model type for planning")
