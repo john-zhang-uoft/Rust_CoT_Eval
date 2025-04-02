@@ -299,9 +299,8 @@ rust
 Compilation error:
 {process.stderr}
 """            
-            if not self._keep_generated_function_signature:
-                error_prompt += f"""
-If there are missing imports, remind the user that their solution must match the problem description and not use any imports not listed in the problem description. Tell them to not use structs absent in the imports and list those offending structs.
+            error_prompt += f"""
+If there are missing imports, strongly remind the user that their solution must not use any imports not listed in the problem description. Tell them to not use structs absent in the imports and list those offending structs in the code that failed to compile.
 Problem description (the user's solution may only use imports listed in this description):
 {declaration} 
 """
@@ -326,7 +325,7 @@ Problem description (the user's solution may only use imports listed in this des
         self._log(combined_code, separate_section=True)
         
         test_prompt = f"""
-You are trying to write comprehensive unit tests to ensure that a solution to the following Rust problem is correct:
+You are trying to write unit tests to ensure that a solution to the following Rust problem is correct:
 Problem:
 {prompt}
 
@@ -347,6 +346,7 @@ This is the solution you will be testing:
         test_prompt += f"""
 Format your response as a complete Rust test module wrapped with #[cfg(test)] that can be directly appended to the code.
 Only write the tests, not the implementation code. Make sure the tests will run with 'cargo test'.
+Assume that the function will be called with the inputs described in the problem description.
 Include useful test cases that would verify the function works correctly for various inputs.
 Do not include any explanations, comments, or markdown formatting in your response - only pure Rust code.
 """

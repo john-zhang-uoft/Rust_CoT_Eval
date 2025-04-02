@@ -396,7 +396,7 @@ Feedback on your tests:
                     break
                 
                 # Otherwise refine the code
-                if iterations < self.max_iterations - 1:
+                if iterations < self.max_iterations - 2:
                     self._log(f"\nRefining code based on test failures...", "cyan")
                     refined_code = self.coder.refine_code(
                         prompt, full_code, feedback
