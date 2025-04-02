@@ -262,7 +262,7 @@ def generate_completions(
                 print(f"Processing {sample['task_id']} ({idx + 1}/{len(samples)})...")
                 
             # Generate solutions
-            sample["raw_generation"] = model.generate_code(prompt, samples_per_problem)
+            sample["raw_generation"] = model.generate_code(prompt, None, samples_per_problem)
             
             # Initialize parser
             parser = ContentParser()
