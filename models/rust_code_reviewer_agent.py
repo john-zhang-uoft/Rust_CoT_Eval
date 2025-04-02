@@ -20,6 +20,11 @@ DEFAULT_TIMEOUT = 60  # 1 minute timeout for compilation and test execution
 class RustCodeReviewerAgent(CodeGenerationModel):
     """Agent that reviews code, tests it, and provides feedback"""
     
+    system_prompt = """
+You are a Rust quality assurance expert.
+Your task is to review a Rust code implementation and provide feedback on its correctness.
+"""
+
     def __init__(self, model: CodeGenerationModel, timeout: int = DEFAULT_TIMEOUT, sample_idx: int = 0, rust_dir: Optional[str] = None, thread_id: Optional[int] = None, keep_generated_function_signature: bool = False):
         self.model = model
         self.timeout = timeout
@@ -312,7 +317,7 @@ Problem description (the user's solution may only use imports listed in this des
 {declaration} 
 """
             start_time = time.time()
-            error_analysis = self.model.generate_code(error_prompt, n=1)[0]
+            error_analysis = self.model.generate_code(error_prompt, system_prompt=self.system_prompt, n=1)[0]
             details["analysis_duration"] = time.time() - start_time
             details["error_analysis"] = error_analysis
             
@@ -334,7 +339,6 @@ Problem description (the user's solution may only use imports listed in this des
         self._log("-" * 40)
         
         test_prompt = f"""
-You are a Rust testing expert.
 You are trying to write comprehensive unit tests to ensure that a solution to the following Rust problem is correct:
 Problem:
 {prompt}
@@ -357,7 +361,7 @@ Only write the tests, not the implementation code. Make sure the tests will run 
 Include useful test cases that would verify the function works correctly for various inputs.
 Do not include any explanations, comments, or markdown formatting in your response - only pure Rust code.
 """
-        raw_test_code = self.model.generate_code(test_prompt, n=1)[0]
+        raw_test_code = self.model.generate_code(test_prompt, system_prompt=self.system_prompt, n=1)[0]
         
         # Record duration
         details = {
@@ -630,7 +634,7 @@ Please provide a detailed analysis of the problems in the implementation:
 
 Your feedback should be specific and focus on fixing the implementation, not the tests.
 """
-        feedback = self.model.generate_code(feedback_prompt, n=1)[0]
+        feedback = self.model.generate_code(feedback_prompt, system_prompt=self.system_prompt, n=1)[0]
         
         details = {
             "duration": time.time() - start_time,

@@ -6,6 +6,11 @@ import termcolor
 class CodeRefinementAgent(CodeGenerationModel):
     """Agent that refines code based on prompts"""
     
+    system_prompt = """
+You are a Rust programming expert. Your task is to solve a Rust problem by implementing the function whose signature and imports you are given.
+Do NOT change the function signature. Do not add any imports that are not already present in the problem description.
+"""
+    
     def __init__(self, model: CodeGenerationModel, verbose: bool = True):
         self.model = model
         self._verbose = verbose
@@ -46,13 +51,7 @@ class CodeRefinementAgent(CodeGenerationModel):
         self._log(f"\nGENERATING INITIAL CODE...", "cyan", attrs=["bold"], separate_section=True)
         self._log(f"Using prompt of length {len(prompt)} characters", "cyan")
         
-        prompt = f"""
-You are a Rust programming expert. Your task is to solve the following Rust problem by implementing the function whose signature you are given.
-Do NOT change the function signature. Do not add any imports that are not already present in the problem description.
-
-{prompt}
-"""
-        codes = self.model.generate_code(prompt, n=n)
+        codes = self.model.generate_code(prompt, system_prompt=self.system_prompt, n=n)
         
         for i, code in enumerate(codes):
             if n > 1:
@@ -72,15 +71,12 @@ Do NOT change the function signature. Do not add any imports that are not alread
         self._log(feedback, separate_section=True)
         
         refinement_prompt = f"""
-You are a Rust programming expert. Your task is to solve the following Rust problem by implementing the function.
-
 Original Problem:
 ####
 {prompt}
 ####
-Do not change the function signature of the function. Do not use any imports that are not already present in the problem description.
 
-You are given an old implementation of the function and feedback on what is wrong with it.
+You are given an unrefined implementation of the function and feedback on what is wrong with it.
 Old Implementation:
 ```rust
 {code}
@@ -96,7 +92,7 @@ The function name and signature should not change from the original problem.
 """
         self._log(f"Created refinement prompt of length {len(refinement_prompt)} characters", "cyan")
         
-        refined_codes = self.model.generate_code(refinement_prompt, n=n)
+        refined_codes = self.model.generate_code(refinement_prompt, system_prompt=self.system_prompt, n=n)
         
         for i, refined_code in enumerate(refined_codes):
             if n > 1:
