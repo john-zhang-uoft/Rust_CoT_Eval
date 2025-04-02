@@ -96,10 +96,8 @@ class ConfidenceMultiAgentModel:
         self.tester = RustCodeReviewerAgent(tester_model, verbose=verbose)
         self.test_checker = TesterCheckerAgent(tester_model, language=language, verbose=verbose)
         
-        # Initialize confidence checkers
-        self.planner_confidence_checker = ConfidenceChecker(planner_model, verbose=verbose)
-        self.coder_confidence_checker = ConfidenceChecker(coder_model, verbose=verbose)
-        self.tester_confidence_checker = ConfidenceChecker(tester_model, verbose=verbose)
+        # Initialize a single confidence checker instance for all agents
+        self.confidence_checker = ConfidenceChecker(tester_model, verbose=verbose)
         
         # Store models for reference
         self.planner_model = planner_model
@@ -159,11 +157,12 @@ class ConfidenceMultiAgentModel:
             # Check planner confidence
             planner_system_prompt = self.planner.system_prompt
             planner_response = json.dumps(plan_data, indent=2)
-            planner_confidence, planner_explanation = self.planner_confidence_checker.check_confidence(
+            planner_confidence, planner_explanation = self.confidence_checker.check_confidence(
                 planner_system_prompt, 
                 planner_response, 
                 prompt
             )
+            
             self._log(f"Planner confidence: {planner_confidence}/100", "cyan")
             self._log(f"Planner explanation: {planner_explanation}", "cyan")
             
@@ -190,11 +189,12 @@ Here is a plan to solve this problem:
 Implement the solution in Rust according to this declaration:
 {declaration}
 """
+            
             initial_code = self.coder.generate_code(coding_prompt)[0]
             
             # Check coder confidence
             coder_system_prompt = self.coder.system_prompt
-            coder_confidence, coder_explanation = self.coder_confidence_checker.check_confidence(
+            coder_confidence, coder_explanation = self.confidence_checker.check_confidence(
                 coder_system_prompt,
                 initial_code,
                 coding_prompt
@@ -209,41 +209,147 @@ Implement the solution in Rust according to this declaration:
             while iterations < self.max_iterations:
                 self._log(f"\n{'='*80}\nPHASE 3: ITERATION {iterations+1}/{self.max_iterations}\n{'='*80}", "blue", always=True)
                 
-                # Test the code
-                self._log(f"\nTesting code...", "cyan")
-                feedback, review_details, test_success = self.tester.generate_feedback(
+                # Step 1: Check if the code compiles
+                self._log(f"\nSTEP 1: CHECKING COMPILATION...", "cyan")
+                compiles, compile_feedback, compile_details = self.tester.check_compilation(declaration, current_code)
+                
+                if not compiles:
+                    self._log(f"Compilation failed: {compile_feedback}", "red")
+                    
+                    # Store iteration data
+                    iteration_data = {
+                        "iteration": iterations,
+                        "code": current_code,
+                        "feedback": compile_feedback,
+                        "success": False,
+                        "compilation": compile_details,
+                        "confidence": {
+                            "planner": planner_confidence,
+                            "coder": coder_confidence,
+                            "tester": 0  # No tester confidence if compilation fails
+                        }
+                    }
+                    iterations_data.append(iteration_data)
+                    
+                    # Refine the code
+                    if iterations < self.max_iterations - 1:
+                        self._log(f"\nRefining code after compilation error...", "cyan")
+                        refined_code = self.coder.refine_code(
+                            prompt, current_code, compile_feedback
+                        )[0]
+                        
+                        # Check coder confidence in refined code
+                        refinement_prompt = f"Refine code based on compilation feedback: {compile_feedback}"
+                        coder_confidence, coder_explanation = self.confidence_checker.check_confidence(
+                            coder_system_prompt,
+                            refined_code,
+                            refinement_prompt
+                        )
+                        
+                        self._log(f"Coder confidence in refined code: {coder_confidence}/100", "cyan")
+                        self._log(f"Coder explanation: {coder_explanation}", "cyan")
+                        
+                        current_code = refined_code
+                        iterations += 1
+                        continue
+                    else:
+                        success = False
+                        exit_reason = "compilation_failed"
+                        break
+                
+                # Step 2: Generate tests
+                self._log(f"\nSTEP 2: GENERATING TESTS...", "cyan")
+                tests_generated, test_code, test_gen_details = self.tester.generate_tests(
                     prompt, declaration, current_code, entry_point
                 )
-                # Convert to single values since generate_feedback returns lists
-                feedback = feedback[0]
-                success = test_success[0]
-                review_detail = review_details[0]
                 
-                # Check tester confidence
+                if not tests_generated:
+                    self._log(f"Could not generate tests: {test_code}", "red")
+                    
+                    # Store iteration data
+                    iteration_data = {
+                        "iteration": iterations,
+                        "code": current_code,
+                        "feedback": f"Test generation failed: {test_code}",
+                        "success": False,
+                        "compilation": compile_details,
+                        "test_generation": test_gen_details,
+                        "confidence": {
+                            "planner": planner_confidence,
+                            "coder": coder_confidence,
+                            "tester": 0  # No tester confidence if test generation fails
+                        }
+                    }
+                    iterations_data.append(iteration_data)
+                    
+                    # Exit with failure
+                    success = False
+                    exit_reason = "test_generation_failed"
+                    break
+                
+                # Step 3: Check test quality
+                self._log(f"\nSTEP 3: CHECKING TEST QUALITY...", "cyan")
+                test_quality_feedback = self.test_checker.check_tests(
+                    prompt, declaration, current_code, test_code, entry_point
+                )
+                self._log(f"Test quality feedback: {test_quality_feedback}", "cyan")
+                
+                # Step 4: Refine tests based on feedback
+                self._log(f"\nSTEP 4: REFINING TESTS...", "cyan")
+                extra_instructions = f"""
+Based on the review, improve your tests to better match the requirements.
+Feedback on your tests:
+{test_quality_feedback}
+"""
+                tests_refined, refined_test_code, refined_test_details = self.tester.generate_tests(
+                    prompt, declaration, current_code, entry_point, extra_instructions=extra_instructions
+                )
+                
+                if not tests_refined:
+                    self._log(f"Could not refine tests: {refined_test_code}", "red")
+                    # Fall back to original tests
+                    refined_test_code = test_code
+                    self._log(f"Falling back to original tests", "yellow")
+                
+                # Check tester confidence in the test code
                 tester_system_prompt = self.tester.system_prompt
-                tester_confidence, tester_explanation = self.tester_confidence_checker.check_confidence(
+                tester_confidence, tester_explanation = self.confidence_checker.check_confidence(
                     tester_system_prompt,
-                    feedback,
+                    refined_test_code,
                     prompt
                 )
                 
-                self._log(f"Tester confidence: {tester_confidence}/100", "cyan")
+                self._log(f"Tester confidence in tests: {tester_confidence}/100", "cyan")
                 self._log(f"Tester explanation: {tester_explanation}", "cyan")
                 
-                # If test code was generated, check its quality
-                if 'test_generation' in review_detail and 'test_module' in review_detail['test_generation']:
-                    tests = review_detail['test_generation']['test_module']
-                    test_quality_feedback = self.test_checker.check_tests(
-                        prompt, declaration, current_code, tests, entry_point
+                # Step 5: Run tests
+                self._log(f"\nSTEP 5: RUNNING TESTS...", "cyan")
+                tests_pass, test_output, test_details = self.tester.run_tests(
+                    declaration, current_code, refined_test_code, entry_point
+                )
+                
+                # Store overall feedback
+                if tests_pass:
+                    feedback = "Code looks good. All tests passed."
+                else:
+                    # Generate detailed feedback for test failures
+                    detailed_feedback, analysis_details = self.tester.generate_detailed_feedback(
+                        prompt, declaration, current_code, refined_test_code, test_output
                     )
-                    self._log(f"Test quality feedback: {test_quality_feedback}", "cyan")
+                    feedback = detailed_feedback
+                    test_details["analysis"] = analysis_details
                 
                 # Store iteration data
                 iteration_data = {
                     "iteration": iterations,
                     "code": current_code,
                     "feedback": feedback,
-                    "success": success,
+                    "success": tests_pass,
+                    "compilation": compile_details,
+                    "test_generation": test_gen_details,
+                    "test_quality_feedback": test_quality_feedback,
+                    "refined_tests": refined_test_details,
+                    "test_execution": test_details,
                     "confidence": {
                         "planner": planner_confidence,
                         "coder": coder_confidence,
@@ -253,8 +359,9 @@ Implement the solution in Rust according to this declaration:
                 iterations_data.append(iteration_data)
                 
                 # Exit early if tests pass
-                if success:
+                if tests_pass:
                     self._log(f"Tests passed! Exiting early.", "green", always=True)
+                    success = True
                     exit_reason = "tests_passed"
                     break
                 
@@ -274,14 +381,14 @@ Implement the solution in Rust according to this declaration:
                 
                 # Otherwise refine the code
                 if iterations < self.max_iterations - 1:
-                    self._log(f"\nRefining code...", "cyan")
+                    self._log(f"\nRefining code based on test failures...", "cyan")
                     refined_code = self.coder.refine_code(
                         prompt, current_code, feedback
                     )[0]
                     
                     # Check coder confidence in refined code
                     refinement_prompt = f"Refine code based on feedback: {feedback}"
-                    coder_confidence, coder_explanation = self.coder_confidence_checker.check_confidence(
+                    coder_confidence, coder_explanation = self.confidence_checker.check_confidence(
                         coder_system_prompt,
                         refined_code,
                         refinement_prompt

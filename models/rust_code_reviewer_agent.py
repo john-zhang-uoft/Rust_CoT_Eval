@@ -125,9 +125,7 @@ Your task is to review a Rust code implementation and provide feedback on its co
             self._log(f"Calling ContentParser with entry_point='{entry_point}', extract_all={self._keep_generated_function_signature}")
             parsed_code = self.parser(prompt, raw_code, entry_point, extract_all=self._keep_generated_function_signature)
             self._log(f"\nPARSE SUCCESSFUL for {entry_point}:", "green", attrs=["bold"])
-            self._log("-" * 40)
-            self._log(parsed_code)
-            self._log("-" * 40)
+            self._log(parsed_code, separate_section=True)
             return parsed_code
         except ParseError as e:
             self._log(f"\nPARSE ERROR: {str(e)}", "red", attrs=["bold"])
@@ -139,9 +137,7 @@ Your task is to review a Rust code implementation and provide feedback on its co
             if match:
                 extracted_code = match.group(0)
                 self._log(f"\nFALLBACK EXTRACTION SUCCESSFUL:", "yellow", attrs=["bold"])
-                self._log("-" * 40)
-                self._log(extracted_code)
-                self._log("-" * 40)
+                self._log(extracted_code, separate_section=True)
                 return extracted_code
             
             # If everything fails, try to extract from code blocks
@@ -149,9 +145,7 @@ Your task is to review a Rust code implementation and provide feedback on its co
                 for block in sorted(code_blocks, key=len, reverse=True):
                     if f"fn {entry_point}" in block:
                         self._log(f"\nEXTRACTING FROM CODE BLOCK:", "yellow", attrs=["bold"])
-                        self._log("-" * 40)
-                        self._log(block)
-                        self._log("-" * 40)
+                        self._log(block, separate_section=True)
                         return block
             
             # Last resort: return raw code
@@ -174,9 +168,7 @@ Your task is to review a Rust code implementation and provide feedback on its co
         implementation = self._parse_code(implementation, original_prompt, entry_point)
         # Print the implementation
         self._log(f"\nIMPLEMENTATION PARSED:", "cyan", attrs=["bold"])
-        self._log("-" * 40)
-        self._log(implementation)
-        self._log("-" * 40)
+        self._log(implementation, separate_section=True)
 
         feedbacks = []
         detail_list = []   # Use a separate list variable for review details
@@ -260,9 +252,7 @@ Your task is to review a Rust code implementation and provide feedback on its co
             
             # Print the code being compiled
             self._log(f"\nCOMPILING CODE:", "cyan", attrs=["bold"])
-            self._log("-" * 40)
-            self._log(combined_code)
-            self._log("-" * 40)
+            self._log(combined_code, separate_section=True)
             
             # Write to file
             with open(file_path, "w") as f:
@@ -327,16 +317,14 @@ Problem description (the user's solution may only use imports listed in this des
         self._log(f"Compilation succeeded for {file_prefix}.rs in {details['duration']:.2f} seconds.", "green")
         return True, "Code compiles successfully.", details
     
-    def generate_tests(self, prompt: str, declaration: str, implementation: str, entry_point: str, implementation_visible: bool = True) -> Tuple[bool, str, Dict[str, Any]]:
+    def generate_tests(self, prompt: str, declaration: str, implementation: str, entry_point: str, extra_instructions: str = None, implementation_visible: bool = True) -> Tuple[bool, str, Dict[str, Any]]:
         """Generate unit tests for the code"""
         start_time = time.time()
         combined_code = declaration + "\n" + implementation
         
         # Print the implementation we're generating tests for
         self._log(f"\nGENERATING TESTS FOR IMPLEMENTATION:", "cyan", attrs=["bold"])
-        self._log("-" * 40)
-        self._log(combined_code)
-        self._log("-" * 40)
+        self._log(combined_code, separate_section=True)
         
         test_prompt = f"""
 You are trying to write comprehensive unit tests to ensure that a solution to the following Rust problem is correct:
@@ -352,8 +340,10 @@ This is the solution you will be testing:
 ```rust
 {combined_code}
 ```
-
-The entry point function name is {entry_point}.
+"""
+        if extra_instructions:
+            test_prompt += f"""
+{extra_instructions}
 """
         test_prompt += f"""
 Format your response as a complete Rust test module wrapped with #[cfg(test)] that can be directly appended to the code.
@@ -371,9 +361,7 @@ Do not include any explanations, comments, or markdown formatting in your respon
         
         # Show the raw test code
         self._log(f"\nRAW TEST CODE:", "cyan", attrs=["bold"])
-        self._log("-" * 40)
-        self._log(raw_test_code)
-        self._log("-" * 40)
+        self._log(raw_test_code, separate_section=True)
         
         # Extract test module directly instead of using ContentParser
         # First try to extract from Markdown code blocks
@@ -382,26 +370,20 @@ Do not include any explanations, comments, or markdown formatting in your respon
             # Use the largest code block
             test_code = max(code_blocks, key=len)
             self._log(f"\nEXTRACTED TEST CODE FROM CODE BLOCKS:", "cyan", attrs=["bold"])
-            self._log("-" * 40)
-            self._log(test_code)
-            self._log("-" * 40)
+            self._log(test_code, separate_section=True)
         else:
             # Try to extract #[cfg(test)] module directly
             test_module_match = re.search(r'(#\[cfg\(test\)].*)', raw_test_code, re.DOTALL)
             if test_module_match:
                 test_code = test_module_match.group(1)
                 self._log(f"\nEXTRACTED TEST CODE FROM #[cfg(test)]:", "cyan", attrs=["bold"])
-                self._log("-" * 40)
-                self._log(test_code)
-                self._log("-" * 40)
+                self._log(test_code, separate_section=True)
             else:
                 # Just use the raw response, but remove any non-code content
                 # Remove any "Here's the test code:" prefixes
                 test_code = re.sub(r'^.*?(\bmod tests\b|\buse super::\*)', r'\1', raw_test_code, flags=re.DOTALL)
                 self._log(f"\nEXTRACTED TEST CODE FROM RAW RESPONSE:", "cyan", attrs=["bold"])
-                self._log("-" * 40)
-                self._log(test_code)
-                self._log("-" * 40)
+                self._log(test_code, separate_section=True)
         
         # Ensure the test code starts with #[cfg(test)]
         if not test_code.strip().startswith("#[cfg(test)]"):
@@ -414,9 +396,7 @@ Do not include any explanations, comments, or markdown formatting in your respon
                 test_code = f"#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    {test_code}\n}}"
                 
             self._log(f"\nADDED #[cfg(test)] WRAPPER:", "yellow", attrs=["bold"])
-            self._log("-" * 40)
-            self._log(test_code)
-            self._log("-" * 40)
+            self._log(test_code, separate_section=True)
         
         # Check if the test module contains test functions
         if "#[test]" not in test_code:
@@ -430,9 +410,7 @@ Do not include any explanations, comments, or markdown formatting in your respon
             # Add missing closing braces
             test_code += '\n' + '}' * (opening_braces - closing_braces)
             self._log(f"\nFIXED UNBALANCED BRACES:", "yellow", attrs=["bold"])
-            self._log("-" * 40)
-            self._log(test_code)
-            self._log("-" * 40)
+            self._log(test_code, separate_section=True)
         
         details["test_module"] = test_code
         
@@ -493,9 +471,7 @@ Do not include any explanations, comments, or markdown formatting in your respon
             
             # Print the code and tests being run
             self._log(f"\nRUNNING TESTS ON CODE:", "cyan", attrs=["bold"])
-            self._log("-" * 40)
-            self._log(combined_code)
-            self._log("-" * 40)
+            self._log(combined_code, separate_section=True)
             
             # Write to file
             with open(file_path, "w") as f:
