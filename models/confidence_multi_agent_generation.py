@@ -149,6 +149,9 @@ class ConfidenceMultiAgentModel:
         success = False
         exit_reason = "max_iterations_reached"
         
+        # Initialize full_code with empty string as default
+        full_code = ""
+        
         planner_confidence, coder_confidence, tester_confidence = -1, -1, -1
         # Phase 1: Planning
         while planning_attempts < self.max_planning_attempts:
@@ -445,6 +448,11 @@ Feedback on your tests:
             "planning_attempts": planning_attempts,
             "final_confidence": final_confidence
         }
+        
+        # If no successful iterations, use the last attempted code or empty string
+        if not full_code and iterations_data:
+            last_iteration = iterations_data[-1]
+            full_code = last_iteration.get("code", "")
         
         return [full_code], generation_details
     
