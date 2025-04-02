@@ -62,14 +62,11 @@ class OpenAIChatModel(CodeGenerationModel):
         else:
             self._client = OpenAI(api_key=api_key)
     
-    def generate_code(self, prompt: str, n: int = 1) -> List[str]:
+    def generate_code(self, prompt: str, system_prompt: str = None, n: int = 1) -> List[str]:
         """Generate code using OpenAI Chat API"""
-        messages = [
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ]
+        messages = [ { "role": "user", "content": prompt } ]
+        if system_prompt:
+            messages.insert(0, { "role": "system", "content": system_prompt })
         
         max_retries = 5
         retry_count = 0
