@@ -22,6 +22,11 @@ class CodeGenerationModel(ABC):
         """
         pass
     
+    @abstractmethod
+    def generate_chat_completion(self, messages: List[Dict[str, str]], system_prompt: str = None) -> str:
+        """Generate a chat completion using OpenAI Chat API"""
+        pass
+    
     @property
     @abstractmethod
     def model_name(self) -> str:
@@ -98,6 +103,20 @@ class OpenAIChatModel(CodeGenerationModel):
                     print(f"Failed after {max_retries} attempts: {e}")
                     # Return empty strings as fallback
                     return [""] * n
+    
+    def generate_chat_completion(self, messages: List[Dict[str, str]], system_prompt: str = None) -> str:
+        """Generate a chat completion using OpenAI Chat API"""
+        if system_prompt:
+            messages.insert(0, { "role": "system", "content": system_prompt })
+        
+        response = self._client.chat.completions.create(
+            model=self._model,
+            messages=messages,
+            temperature=self._temperature,
+            top_p=self._top_p,
+            n=1
+        )   
+        return response.choices[0].message.content
     
     @property
     def model_name(self) -> str:

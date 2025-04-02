@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""
+ConfidenceCheckerAgent for evaluating the confidence level of another agent's output
+"""
+
+import re
+from typing import Dict, Any, Optional, Tuple, List
+import termcolor
+import json
+
+from models.code_generation_models import CodeGenerationModel
+
+class ConfidenceChecker:
+    """
+    Class responsible for evaluating the confidence level of an agent in its output.
+    It continues as if it were the original agent and reports confidence in the output.
+    """
+    
+    def __init__(
+        self,
+        model: CodeGenerationModel,
+        verbose: bool = False
+    ):
+        """
+        Initialize a confidence checker
+        
+        Args:
+            model: The underlying language model
+            verbose: Whether to print detailed logs
+        """
+        self._model = model
+        self._verbose = verbose
+    
+    def _log(self, message: str, color: str = None, always: bool = False):
+        """
+        Log a message if verbose is true or always is true
+        
+        Args:
+            message: The message to log
+            color: Optional color for the message (using termcolor)
+            always: Whether to log regardless of verbose setting
+        """
+        if self._verbose or always:
+            if color:
+                print(termcolor.colored(message, color))
+            else:
+                print(message)
+    
+    def check_confidence(
+        self, 
+        agent_role_system_message: str,
+        agent_generation: str,
+        context: str
+    ) -> Tuple[int, str]:
+        """
+        Check the confidence of the agent in its output
+        
+        Args:
+            agent_role_system_message: System prompt of the agent to check confidence of
+            agent_generation: The generation of the agent to check confidence of
+            context: What the user said to the agent before the generation
+            
+        Returns:
+            Tuple containing:
+            - Confidence score (0-100)
+            - Explanation of the confidence assessment
+        """
+        
+        # Create a system message with the agent role
+        system_message = {
+            "role": "system",
+            "content": agent_role_system_message
+        }
+        
+        # Build the message list starting with the system message
+        messages = [system_message]
+        
+        # Add any context as a user message if provided
+        if context:
+            messages.append({ "role": "user", "content": context })
+        
+        # Add the previous agent generation to maintain the conversation history
+        messages.append({ "role": "assistant", "content": agent_generation })
+        
+        prompt = f"""
+How confident are you in your response?
+Think step by step about your response and provide a confidence score between 0 and 100 in the following format:
+
+{{
+  "confidence": number between 0-100
+}}
+"""
+        # Add the final user message asking for confidence assessment
+        messages.append({ "role": "user", "content": prompt })
+        
+        # Get completion using the chat format
+        response = self._model.generate_chat_completion(messages)
+        
+        if self._verbose:
+            self._log(f"Confidence checker response: {response}", "cyan")
+        
+        # Extract the confidence score and explanation from the response
+        confidence_data = self.extract_json_from_response(response)
+        confidence = confidence_data["confidence"]
+        
+        return confidence, response
+    
+    def extract_json_from_response(self, response: str) -> Dict[str, Any]:
+        """
+        Extract JSON from response
+        """
+        json_match = re.search(r'```json\s*({.*?})\s*```', response, re.DOTALL)
+        if json_match:
+            plan_data = json.loads(json_match.group(1))
+        else:
+            json_match = re.search(r'{[\s\S]*"confidence"[\s\S]*}', response)
+            if json_match:
+                plan_data = json.loads(json_match.group(0))
+            else:
+                raise ValueError("Could not extract JSON from response")
+            
+        return plan_data
+    
+ 
