@@ -1,7 +1,9 @@
 llama3.3-70b-instruct-fp8
-llama3.2-3b-instruct
-hermes3-8b
-qwen25-coder-32b-instruct
 llama3.1-8b-instruct
+llama3.2-3b-instruct
+qwen25-coder-32b-instruct
 deepseek-llama3.3-70b
+hermes3-8b
 hermes3-70b
+llama-4-maverick-17b-128e-instruct-fp8
+llama-4-scout-17b-16e-instruct
