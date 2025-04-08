@@ -5,8 +5,61 @@ import jsonlines
 from tqdm import tqdm
 import json
 import shutil
+import subprocess
+import signal
+import time
+import threading
 
-def evaluate_completions(input_file, k=1, language="rust", verbose=False):
+# Timeout class for handling subprocess timeouts
+class TimeoutError(Exception):
+    pass
+
+def timeout_handler(proc, timeout_seconds):
+    """
+    Handler function for timing out subprocesses.
+    Kills the process after timeout_seconds.
+    """
+    start_time = time.time()
+    while time.time() - start_time < timeout_seconds:
+        # Check if process has finished
+        if proc.poll() is not None:
+            return proc.returncode
+        time.sleep(0.1)
+    
+    # Process still running after timeout, terminate it
+    try:
+        # Send SIGTERM and wait for a moment to allow clean termination
+        proc.terminate()
+        time.sleep(0.5)
+        
+        # If process is still running, force kill it
+        if proc.poll() is None:
+            proc.kill()
+    except:
+        pass
+    
+    raise TimeoutError("Process timed out")
+
+def run_process_with_timeout(cmd, timeout_seconds=30):
+    """
+    Run a subprocess with a timeout.
+    
+    Args:
+        cmd: Shell command to execute
+        timeout_seconds: Maximum time to wait (in seconds)
+        
+    Returns:
+        Return code of the process if successful, -1 for timeout
+    """
+    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    try:
+        return timeout_handler(process, timeout_seconds)
+    except TimeoutError:
+        print(f"Process timed out after {timeout_seconds} seconds: {cmd}")
+        return -1
+
+def evaluate_completions(input_file, k=1, language="rust", verbose=False, timeout=30):
     """
     Evaluate completions from input_file against unit tests
     and calculate top-k accuracy
@@ -35,6 +88,7 @@ def evaluate_completions(input_file, k=1, language="rust", verbose=False):
     # Results tracking
     results = []
     successful_samples = 0
+    timeout_samples = 0
     
     # Process each sample
     for idx, sample in enumerate(tqdm(samples)):
@@ -114,28 +168,47 @@ def evaluate_completions(input_file, k=1, language="rust", verbose=False):
             if os.path.exists(log_path):
                 os.remove(log_path)
             
-            # Run cargo check
-            returned_val_compilation = os.system(cargo_check)
+            # Run cargo check with timeout
+            returned_val_compilation = run_process_with_timeout(cargo_check, timeout)
+            
+            if returned_val_compilation == -1:
+                # Timeout occurred
+                error_message = "failed: compilation timeout"
+                sample_results.append(error_message)
+                if verbose:
+                    print(f"Generation {gen_idx+1}: {error_message}")
+                
+                # Return to original directory
+                os.chdir(original_dir)
+                continue
             
             # 0 means success
             if returned_val_compilation == 0:
                 # Execution pipeline
                 cargo_test = f"cargo test --bin {file_prefix} --message-format json >> {log_path} 2>&1"
-                returned_val_execution = os.system(cargo_test)
                 
-                if returned_val_execution == 0:
+                # Run with timeout
+                returned_val_execution = run_process_with_timeout(cargo_test, timeout)
+                
+                if returned_val_execution == -1:
+                    # Timeout occurred
+                    error_message = "failed: execution timeout"
+                    sample_results.append(error_message)
+                    if verbose:
+                        print(f"Generation {gen_idx+1}: {error_message}")
+                elif returned_val_execution == 0:
                     sample_results.append("passed")
                     success = True
                     if verbose:
                         print(f"Generation {gen_idx+1}: PASSED")
                 else:
-                    error_message = f"failed: execution error"
+                    error_message = "failed: execution error"
                     sample_results.append(error_message)
                     if verbose:
                         print(f"Generation {gen_idx+1}: {error_message}")
                         print("See logs at:", log_path)
             else:
-                error_message = f"failed: compilation error"
+                error_message = "failed: compilation error"
                 sample_results.append(error_message)
                 if verbose:
                     print(f"Generation {gen_idx+1}: {error_message}")
@@ -148,6 +221,10 @@ def evaluate_completions(input_file, k=1, language="rust", verbose=False):
             # for this sample (if we're doing top-1 accuracy)
             if success and k == 1:
                 break
+        
+        # Count timeout samples
+        if any(result.endswith("timeout") for result in sample_results):
+            timeout_samples += 1
         
         # Fill in remaining results if we didn't test all k generations
         while len(sample_results) < k:
@@ -166,6 +243,7 @@ def evaluate_completions(input_file, k=1, language="rust", verbose=False):
     # Calculate top-k accuracy
     top_k_accuracy = successful_samples / len(samples)
     print(f"Top-{k} Accuracy: {top_k_accuracy:.2%} ({successful_samples}/{len(samples)})")
+    print(f"Timeout Rate: {timeout_samples / len(samples):.2%} ({timeout_samples}/{len(samples)})")
     
     return results, top_k_accuracy
 
@@ -176,6 +254,7 @@ if __name__ == "__main__":
     parser.add_argument("--language", default="rust", choices=["rust"], help="Programming language (default: rust)")
     parser.add_argument("--output_file", help="Output JSONL file for results (default: input_file with '_eval' suffix)")
     parser.add_argument("--verbose", action="store_true", help="Print detailed logs")
+    parser.add_argument("--timeout", type=int, default=30, help="Timeout in seconds for compiling/running each sample (default: 30)")
     
     args = parser.parse_args()
     
@@ -189,7 +268,8 @@ if __name__ == "__main__":
         args.input_file, 
         k=args.k, 
         language=args.language, 
-        verbose=args.verbose
+        verbose=args.verbose,
+        timeout=args.timeout
     )
     
     # Save results to file
