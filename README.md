@@ -14,3 +14,10 @@ If all of the agents are extremely unconfident, the planner can restart everythi
 4. Then the tester agent will write tests, and depending on its confidence in the tests, it'll pick another agent to review the tests it just wrote.
 5. If the tests are found to be very wrong, the tester agent is told to be less confident in its system prompt for the rest of the question.
 6. The coder agent will refine the solution and repeat 3-5
+
+
+#TODO
+The CodeGenerationModel.generate_code() API has changed, make sure everything follows the new one.
+
+#TODO:
+Find some examples where a wrong plan caused the models to come up with code that doesn't work. i.e. find out why deepseek llama planner did better than regular llama
