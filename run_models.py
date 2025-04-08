@@ -18,7 +18,8 @@ def run_model_combination(planner_model, coder_model, tester_model, max_workers=
     """Run the confidence multi agent with the specified model combination"""
     # Create a unique output filename based on the model combination
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = f"results_{planner_model.split('/')[-1]}_{coder_model.split('/')[-1]}_{tester_model.split('/')[-1]}_{timestamp}.txt"
+    results_file = f"results_{planner_model.split('/')[-1]}_{coder_model.split('/')[-1]}_{tester_model.split('/')[-1]}_{timestamp}.jsonl"
+    log_file = f"log_{planner_model.split('/')[-1]}_{coder_model.split('/')[-1]}_{tester_model.split('/')[-1]}_{timestamp}.txt"
     
     # Set environment variables for the models
     env = os.environ.copy()
@@ -30,7 +31,7 @@ def run_model_combination(planner_model, coder_model, tester_model, max_workers=
     env["TESTER_MODEL_NAME"] = tester_model
     
     # Construct and run the command
-    command = f"python3 run_confidence_multi_agent.py"
+    command = f"python3 run_confidence_multi_agent.py --output_file {results_file}"
     if max_workers:
         command += f" --max_workers {max_workers}"
     
@@ -38,12 +39,13 @@ def run_model_combination(planner_model, coder_model, tester_model, max_workers=
     print(f"  Planner: {planner_model}")
     print(f"  Coder: {coder_model}")
     print(f"  Tester: {tester_model}")
-    print(f"Output: {output_file}")
+    print(f"Results will be saved to: {results_file}")
+    print(f"Log will be saved to: {log_file}")
     
-    with open(output_file, 'w') as f:
+    with open(log_file, 'w') as f:
         subprocess.run(command, shell=True, env=env, stdout=f, stderr=subprocess.STDOUT)
     
-    print(f"Completed run, results saved to {output_file}")
+    print(f"Completed run, results saved to {results_file}")
     print("-" * 80)
 
 def main():
