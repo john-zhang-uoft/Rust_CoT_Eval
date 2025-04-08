@@ -64,7 +64,8 @@ class TesterCheckerAgent:
         declaration: str, 
         code: str, 
         tests: str, 
-        entry_point: str
+        entry_point: str,
+        extra_instructions: str = None
     ) -> Tuple[str, int, Dict[str, Any]]:
         """
         Check the quality of tests against the original problem requirements
@@ -75,6 +76,7 @@ class TesterCheckerAgent:
             code: The implementation code
             tests: The tests to check
             entry_point: The function name
+            extra_instructions: Optional additional instructions to include in the prompt
             
         Returns:
             Tuple containing:
@@ -90,7 +92,11 @@ Unit tests written by the junior engineer:
 ```{self._language}
 {tests}
 ```
-
+"""
+        if extra_instructions:
+            check_prompt += f"\n\n{extra_instructions}"
+        
+        check_prompt += """
 Your task is to go through tests one by one check and think step by step about the following:
 "If we implemented the function as described in the problem statement, would the test pass?"
 

@@ -150,6 +150,21 @@ def create_model(model_type: str, model_name: str, temperature: float, top_p: fl
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
+def load_dataset_from_file(file_path: str):
+    """
+    Load a custom dataset from a JSONL file
+    
+    Args:
+        file_path: Path to the JSONL file
+        
+    Returns:
+        List of dataset samples
+    """
+    samples = []
+    with jsonlines.open(file_path, "r") as reader:
+        for item in reader:
+            samples.append(item)
+    return samples
 
 def generate_completions(
     task: str,
@@ -159,7 +174,8 @@ def generate_completions(
     limit: Optional[int] = None,
     verbose: bool = False,
     output_file: Optional[str] = None,
-    max_workers: int = 16
+    max_workers: int = 16,
+    custom_dataset: Optional[str] = None
 ):
     """
     Generate code completions for the given task and language
@@ -173,6 +189,7 @@ def generate_completions(
         verbose: Whether to print detailed information
         output_file: Custom output file path (if None, a default is used)
         max_workers: Maximum number of concurrent workers
+        custom_dataset: Path to a custom JSONL dataset file
     """
     # Set default output file if not provided
     if output_file is None:
@@ -182,8 +199,12 @@ def generate_completions(
     checkpoint_file = f"{output_file}.checkpoint"
         
     # Load the dataset
-    samples = [s for s in load_dataset("bigcode/humanevalpack", language)["test"]]
-    print(f"Loaded {len(samples)} samples from HumanEvalPack {language} dataset")
+    if custom_dataset:
+        samples = load_dataset_from_file(custom_dataset)
+        print(f"Loaded {len(samples)} samples from custom dataset: {custom_dataset}")
+    else:
+        samples = [s for s in load_dataset("bigcode/humanevalpack", language)["test"]]
+        print(f"Loaded {len(samples)} samples from HumanEvalPack {language} dataset")
     
     # Limit samples if specified
     if limit is not None:
@@ -405,6 +426,8 @@ if __name__ == '__main__':
                         help="Custom output file path")
     parser.add_argument("--max_workers", type=int, default=16,
                        help="Maximum number of concurrent workers for processing samples")
+    parser.add_argument("--custom_dataset", type=str, default=None,
+                       help="Path to a custom JSONL dataset file")
                         
     args = parser.parse_args()
 
@@ -422,11 +445,14 @@ if __name__ == '__main__':
     language = os.getenv("LANGUAGE", args.language)
     limit = int(os.getenv("LIMIT", args.limit)) if os.getenv("LIMIT") or args.limit else None
     max_workers = int(os.getenv("MAX_WORKERS", args.max_workers))
+    custom_dataset = os.getenv("CUSTOM_DATASET", args.custom_dataset)
     
     # Create the model
     model = create_model(model_type, model_name, temperature, top_p)
     
     print(f"Evaluating on {task} for {language}")
+    if custom_dataset:
+        print(f"Using custom dataset: {custom_dataset}")
     print(f"Using model: {model.model_name}")
     print(f"Settings: samples={samples}, temperature={temperature}, top_p={top_p}, max_workers={max_workers}")
     
@@ -439,5 +465,6 @@ if __name__ == '__main__':
         limit=limit,
         verbose=verbose,
         output_file=args.output_file,
-        max_workers=max_workers
+        max_workers=max_workers,
+        custom_dataset=custom_dataset
     ) 

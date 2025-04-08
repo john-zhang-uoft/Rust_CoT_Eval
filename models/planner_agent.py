@@ -34,11 +34,10 @@ class PlannerAgent:
         Returns:
             Dictionary with the parsed JSON data
         """
-        required_fields = ["pseudocode", "difficulty", "confidence"]
+        required_fields = ["pseudocode", "difficulty"]
         default_values = {
             "pseudocode": "Could not parse pseudocode",
             "difficulty": 3,  # Medium difficulty as default
-            "confidence": 50  # Medium confidence as default
         }
         
         try:
@@ -63,7 +62,6 @@ class PlannerAgent:
             return {
                 "pseudocode": "Could not parse pseudocode from response. Please check the raw response.",
                 "difficulty": 3,
-                "confidence": 50,
                 "parse_error": str(e)
             }
 
@@ -77,13 +75,12 @@ class PlannerAgent:
             entry_point: The function name
             
         Returns:
-            Dictionary containing pseudocode, difficulty assessment, and termination conditions
+            Dictionary containing pseudocode, difficulty assessment
         """
         planning_prompt = f"""
 Your task is to:
 1. Write clear pseudocode for solving this problem
 2. Evaluate the difficulty of the problem on a scale of 1-5 (1=very easy, 5=very difficult)
-3. Evaluate the confidence of the solution on a scale of 0-100 (0=no confidence, 100=certain)
 
 Problem:
 {prompt}
@@ -92,7 +89,6 @@ Think step by step about the completion of the function, then provide your respo
 {{
   "pseudocode": "detailed pseudocode here",
   "difficulty": number between 1-5,
-  "confidence": number between 0-100
 }}
 """
 
@@ -114,7 +110,6 @@ Think step by step about the completion of the function, then provide your respo
             return {
                 "pseudocode": "Could not parse pseudocode",
                 "difficulty": 3,
-                "confidence": 50,
                 "error": str(e)
             }
     
@@ -144,13 +139,11 @@ It led to the following feedback:
 Your task is to use the feedback to come up with a betterplan for solving this problem.
 1. Write clear pseudocode for solving this problem
 2. Evaluate the difficulty of the problem on a scale of 1-5 (1=very easy, 5=very difficult)
-3. Evaluate the confidence of the solution on a scale of 0-100 (0=no confidence, 100=certain)
 
 Think step by step about the completion of the function, then provide your response in JSON format:
 {{
   "pseudocode": "detailed pseudocode here",
-  "difficulty": number between 1-5,
-  "confidence": number between 0-100
+  "difficulty": number between 1-5
 }}
 """
         response = self._model.generate_code(planning_prompt, self.system_prompt)
@@ -171,7 +164,6 @@ Think step by step about the completion of the function, then provide your respo
             return {
                 "pseudocode": "Could not parse pseudocode",
                 "difficulty": 3,
-                "confidence": 50,
                 "error": str(e)
             }
 
@@ -185,9 +177,10 @@ Think step by step about the completion of the function, then provide your respo
         Returns:
             Boolean indicating if a restart with new pseudocode is needed
         """
-        # If any agent has confidence below threshold, restart
+        # If average confidence is below threshold, restart
         very_low_confidence_threshold = 30
-        restart_needed = any(conf < very_low_confidence_threshold for conf in agents_confidence.values())
+        average_confidence = sum(agents_confidence.values()) / len(agents_confidence)
+        restart_needed = average_confidence < very_low_confidence_threshold
         
         if restart_needed and self._verbose:
             print(termcolor.colored("Low confidence detected. Restarting with new pseudocode.", "yellow"))

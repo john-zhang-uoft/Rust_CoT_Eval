@@ -7,7 +7,7 @@ import os
 import subprocess
 import argparse
 from datetime import datetime
-
+import time
 def load_models(filename):
     """Load model names from a file"""
     with open(filename, 'r') as f:
@@ -31,7 +31,7 @@ def run_model_combination(planner_model, coder_model, tester_model, max_workers=
     env["TESTER_MODEL_NAME"] = tester_model
     
     # Construct and run the command
-    command = f"python3 run_confidence_multi_agent.py --output_file {results_file}"
+    command = f"python3 run_confidence_rating_multi_agent.py --output_file {results_file}"
     if max_workers:
         command += f" --max_workers {max_workers}"
     
@@ -76,18 +76,26 @@ def main():
         # Run the same model for all three roles
         for model in models:
             run_model_combination(model, model, model, args.max_workers)
+            # Sleep for 5 minutes
+            time.sleep(600)
     elif args.planner_only:
         # Vary only the planner model
         for planner_model in models:
             run_model_combination(planner_model, args.default_model, args.default_model, args.max_workers)
+            # Sleep for 5 minutes
+            time.sleep(600)
     elif args.coder_only:
         # Vary only the coder model
         for coder_model in models:
             run_model_combination(args.default_model, coder_model, args.default_model, args.max_workers)
+            # Sleep for 5 minutes
+            time.sleep(600)
     elif args.tester_only:
         # Vary only the tester model
         for tester_model in models:
             run_model_combination(args.default_model, args.default_model, tester_model, args.max_workers)
+            # Sleep for 5 minutes
+            time.sleep(600)
     else:
         # Run all combinations (warning: can be a lot!)
         total_runs = len(models)**3
