@@ -28,15 +28,16 @@ class ContentParser:
 
     def extract_all_functions(self, script: str, entry_point: str) -> str:
         """
-        Extracts all functions from the given Rust script, excluding the main function
-        and test module. This ensures that all helper functions are included.
+        Extracts all code constructs from the given Rust script, excluding the main function,
+        import statements, and test module. This ensures that all helper functions, enums,
+        structs, and other definitions are included.
         
         Args:
             script: The Rust code as a string
             entry_point: The primary function that's being called (for finding variations)
             
         Returns:
-            A string containing all the non-main, non-test functions
+            A string containing all the necessary code constructs
         """
         debug(f"extract_all_functions - script: {script[:50]}...", self.verbose)
         debug(f"extract_all_functions - entry_point: {entry_point}", self.verbose)
@@ -49,11 +50,7 @@ class ContentParser:
                 script = code_blocks[0]
                 debug(f"extracted code: {script[:100]}...", self.verbose)
         
-        # Find all function definitions in the script
-        function_pattern = re.compile(r'\bfn\s+([a-zA-Z0-9_]+).*?(?=\bfn\s+|\Z)', re.DOTALL)
-        all_functions = []
-        
-        # First, identify the test module if it exists
+        # Find the test module if it exists and remove it
         test_module_start = script.find("#[cfg(test)]")
         if test_module_start != -1:
             # Extract the script without the test module
@@ -62,29 +59,47 @@ class ContentParser:
         else:
             script_without_tests = script
         
-        # Now extract all functions
-        for match in function_pattern.finditer(script_without_tests):
-            fn_name = match.group(1)
-            fn_content = match.group(0)
-            
-            # Skip main function
-            if fn_name == "main":
-                debug(f"Skipping main function", self.verbose)
-                continue
-                
-            debug(f"Found function: {fn_name}", self.verbose)
-            all_functions.append(fn_content)
+        # Split the script into lines for processing
+        lines = script_without_tests.split('\n')
+        result_lines = []
         
-        debug(f"{all_functions}", self.verbose)
-        # Ensure our entry point is included (in case of camel case variations)
+        # Find the main function and remove it
+        main_fn_start = None
+        main_fn_end = None
+        brace_counter = 0
+        in_main_function = False
+        
+        for i, line in enumerate(lines):
+            # Skip import statements
+            if line.strip().startswith("use "):
+                debug(f"Skipping import: {line}", self.verbose)
+                continue
+            
+            # Check for main function
+            if "fn main" in line and not in_main_function:
+                main_fn_start = i
+                in_main_function = True
+                brace_counter = line.count('{') - line.count('}')
+                continue
+            
+            if in_main_function:
+                brace_counter += line.count('{') - line.count('}')
+                if brace_counter <= 0:
+                    main_fn_end = i
+                    in_main_function = False
+                continue
+            
+            # If not in main function and not an import, keep the line
+            result_lines.append(line)
+        
+        # Ensure our entry point is included (in case it was somehow missed)
         entry_point_found = False
-        for fn_content in all_functions:
-            for variation in self._entry_point_variations(entry_point):
-                if fn_content.find(f"fn {variation}") != -1:
-                    entry_point_found = True
-                    debug(f"Found entry point variation: {variation}", self.verbose)
-                    break
-            if entry_point_found:
+        code_str = '\n'.join(result_lines)
+        
+        for variation in self._entry_point_variations(entry_point):
+            if re.search(rf'\bfn\s+{re.escape(variation)}\s*\(', code_str):
+                entry_point_found = True
+                debug(f"Found entry point variation: {variation}", self.verbose)
                 break
                 
         if not entry_point_found:
@@ -96,16 +111,16 @@ class ContentParser:
                 match = entry_point_pattern.search(script_without_tests)
                 if match:
                     debug(f"Found entry point variation: {variation}", self.verbose)
-                    all_functions.append(match.group(0))
+                    result_lines.append(match.group(0))
                     entry_point_found = True
                     break
         
-        if all_functions:
-            result = "\n\n".join(all_functions)
-            debug(f"Extracted {len(all_functions)} functions", self.verbose)
+        if result_lines:
+            result = "\n".join(result_lines)
+            debug(f"Extracted code with {len(result_lines)} lines", self.verbose)
             return result
         else:
-            debug(f"No functions found", self.verbose)
+            debug(f"No content extracted", self.verbose)
             return script
 
     def get_function_implementation(self, script: str, func_name: str) -> str:
@@ -195,6 +210,33 @@ class ContentParser:
         debug(f"Extracted function body: {result}", self.verbose)
         return result
 
+    def get_function_signature(self, script: str, func_name: str) -> str:
+        """
+        Returns the signature of the function named `func_name` from the given Rust script,
+        including the function name, arguments, return type, and opening brace.
+        
+        Args:
+            script: The Rust code as a string
+            func_name: The name of the function to extract the signature for
+            
+        Returns:
+            The function signature as a string
+        """
+        debug(f"get_function_signature - script: {script[:50]}...", self.verbose)
+        debug(f"get_function_signature - looking for function: {func_name}", self.verbose)
+        
+        # Try to find the function with various name variations
+        for ep in self._entry_point_variations(func_name):
+            # Regex to match function signature including fn name, arguments, return type, and opening brace
+            pattern = re.compile(r'\bfn\s+' + re.escape(ep) + r'\s*\([^{]*\)\s*(?:->\s*[^{]*?)?\s*\{', re.DOTALL)
+            match = pattern.search(script)
+            if match:
+                signature = match.group(0)
+                debug(f"Found function signature: {signature}", self.verbose)
+                return signature
+        
+        debug(f"Function signature not found for: {func_name}", self.verbose)
+        return ""
 
     def __call__(self, prompt: str, content: str, entry_point: str, extract_all: bool = False):
         """

@@ -226,6 +226,8 @@ Implement the solution in Rust according to this function signature:
 
             compilation_black_board = ""
 
+            original_declaration = declaration
+
             if self.keep_generated_function_signature:
                 # When we want to keep function signatures from the implementation
                 self._log("Using implementation with its own function signatures instead of replacing it.", "cyan")
@@ -241,11 +243,19 @@ Implement the solution in Rust according to this function signature:
                 if self.keep_generated_function_signature:
                     # When we want to keep function signatures from the implementation
                     full_code = current_extracted_code
+
+                    self._log(f"\nSTEP 0: CHECKING SIGNATURE MATCHES...", "cyan")
+                    signature_matches = self.tester.check_signature_matches(original_declaration, full_code, entry_point)
+                    if not signature_matches:
+                        self._log("Signature does not match. Refining code...", "yellow")
+                        # Refine the code
+                        fixed_output = self.coder.refine_code(prompt, full_code, "The function signature does not match the signature in the problem statement. Please fix it.")[0]
+                        full_code = self.tester.parse_code(fixed_output, prompt, entry_point)
                 else:
                     # Normal case: combine declaration and implementation
                     self._log("Using declaration + implementation", "cyan")
                     full_code = f"{declaration}\n{current_extracted_code}"
-                    
+
                 # Step 1: Check if the code compiles
                 self._log(f"\nSTEP 1: CHECKING COMPILATION...", "cyan")
                 compiles, compile_feedback, compile_details = self.tester.check_compilation(declaration, full_code)

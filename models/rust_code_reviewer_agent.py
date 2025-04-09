@@ -228,6 +228,22 @@ Your task is to carefully review a Rust code implementation and provide feedback
 
         return True, feedback, details
     
+    def check_signature_matches(self, declaration: str, implementation: str, entry_point: str) -> bool:
+        """Check if the signature of the implementation matches the declaration"""
+        
+        # First extract the function signature from the declaration
+        signature_index = declaration.find("fn " + entry_point)
+        required_signature = declaration[signature_index:].replace(' ', '').strip()
+
+        # Then extract the function signature from the implementation
+        implementation_signature = self.parser.get_function_signature(implementation, entry_point).replace(' ', '').strip()
+
+        print("required_signature: ", required_signature)
+        print("implementation_signature: ", implementation_signature)
+        # Compare the signatures
+        return required_signature == implementation_signature
+        
+    
     def check_compilation(self, declaration: str, implementation: str) -> Tuple[bool, str, Dict[str, Any]]:
         """Check if the code compiles"""
         start_time = time.time()
