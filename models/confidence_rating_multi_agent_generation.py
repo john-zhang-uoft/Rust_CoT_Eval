@@ -225,6 +225,13 @@ Implement the solution in Rust according to this function signature:
             current_coder_output = initial_coder_output
 
             compilation_black_board = ""
+
+            if self.keep_generated_function_signature:
+                # When we want to keep function signatures from the implementation
+                self._log("Using implementation with its own function signatures instead of replacing it.", "cyan")
+                # Remove the function signature from the declaration
+                declaration = declaration.split("fn " + entry_point)[0]
+
             # Phase 3: Iterative refinement
             while iterations < self.max_iterations:
                 self._log(f"\n{'='*80}\nPHASE 3: ITERATION {iterations+1}/{self.max_iterations}\n{'='*80}", "blue", always=True)
@@ -233,14 +240,11 @@ Implement the solution in Rust according to this function signature:
 
                 if self.keep_generated_function_signature:
                     # When we want to keep function signatures from the implementation
-                    self._log("Using implementation with its own function signatures (empty declaration)", "cyan")
                     full_code = current_extracted_code
-                    declaration = ""
                 else:
                     # Normal case: combine declaration and implementation
                     self._log("Using declaration + implementation", "cyan")
                     full_code = f"{declaration}\n{current_extracted_code}"
-                    declaration = declaration
                     
                 # Step 1: Check if the code compiles
                 self._log(f"\nSTEP 1: CHECKING COMPILATION...", "cyan")
@@ -589,7 +593,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_planning_attempts", type=int, default=2,
                         help="Maximum number of planning attempts")
     parser.add_argument("--output_file", type=str, default=None,
-                        help="Output file path (default: confidence_multi_agent_results_{language}.jsonl)")
+                        help="Output file path (default: confidence_multi_agent_results_{language}_{planner_model_name}_{coder_model_name}_{tester_model_name}.jsonl)")
     parser.add_argument("--limit", type=int, default=None,
                         help="Limit the number of samples to process")
     parser.add_argument("--keep_generated_function_signature", type=bool, default=True,
