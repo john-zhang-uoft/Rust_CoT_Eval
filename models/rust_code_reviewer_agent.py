@@ -21,8 +21,8 @@ class RustCodeReviewerAgent(CodeGenerationModel):
     """Agent that reviews code, tests it, and provides feedback"""
     
     system_prompt = """
-You are a Rust quality assurance expert.
-Your task is to review a Rust code implementation and provide feedback on its correctness.
+You are a careful Rust quality assurance expert.
+Your task is to carefully review a Rust code implementation and provide feedback on its correctness.
 """
 
     def __init__(self, model: CodeGenerationModel, timeout: int = DEFAULT_TIMEOUT, sample_idx: int = 0, rust_dir: Optional[str] = None, thread_id: Optional[int] = None, keep_generated_function_signature: bool = False, verbose: bool = True):
@@ -290,8 +290,8 @@ Your task is to review a Rust code implementation and provide feedback on its co
         if process.returncode != 0:
             # Use the model to summarize the error
             error_prompt = f"""
-Analyze this Rust compilation error and provide a clear, concise explanation of what's wrong and how the user should fix it:
-
+Analyze this Rust compilation error and provide a clear, concise explanation of what's wrong and how it should be fixed:
+Point out the specific problem in the code that is causing the compilation error and nothing else.
 Code:
 rust
 {combined_code}
@@ -300,9 +300,10 @@ Compilation error:
 {process.stderr}
 """            
             error_prompt += f"""
-If there are missing imports, strongly remind the user that their solution must not use any imports not listed in the problem description. Tell them to not use structs absent in the imports and list those offending structs in the code that failed to compile.
-Problem description (the user's solution may only use imports listed in this description):
-{declaration} 
+These are the only imports allowed:
+{declaration}
+If there was a compilation error because of missing imports, this is because the user's imports that were not allowed were removed.
+Strongly remind the user that their solution must only use allowed imports and tell them which import is not allowed.
 """
             start_time = time.time()
             error_analysis = process.stderr

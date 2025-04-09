@@ -46,6 +46,8 @@ def process_sample(args, sample_with_idx, is_verbose=False):
             language=args.language,
             max_iterations=args.max_iterations,
             max_planning_attempts=args.max_planning_attempts,
+            keep_generated_function_signature=args.keep_generated_function_signature,
+            tester_knows_cases=args.tester_knows_cases,
             verbose=is_verbose
         )
         
@@ -66,7 +68,8 @@ def process_sample(args, sample_with_idx, is_verbose=False):
         final_code, generation_details = multi_agent.generate_code(
             prompt, 
             declaration=declaration, 
-            entry_point=entry_point
+            entry_point=entry_point,
+            test_code=sample.get("test") if args.tester_knows_cases else None
         )
         final_code = final_code[0]
         duration = time.time() - start_time
@@ -224,6 +227,10 @@ if __name__ == "__main__":
                         help="Print detailed logs")
     parser.add_argument("--max_workers", type=int, default=16,
                         help="Maximum number of parallel workers")
+    parser.add_argument("--keep_generated_function_signature", action="store_true", default=True,
+                        help="Keep the generated function signature")
+    parser.add_argument("--tester_knows_cases", action="store_true",
+                        help="Use test cases from the dataset instead of generating tests")
                         
     args = parser.parse_args()
     

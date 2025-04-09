@@ -14,7 +14,7 @@ class TesterCheckerAgent:
     Agent responsible for checking the quality of tests against the original problem requirements.
     This agent ensures tests actually validate the behavior specified in the prompt.
     """
-    system_prompt = """You are a senior software engineer that evaluates the correctnesses of tests written by a junior engineer."""
+    system_prompt = """You are a careful reviewer that carefully checks if the unit tests written are correct."""
     
     def __init__(
         self,
@@ -97,9 +97,8 @@ Unit tests written by the junior engineer:
             check_prompt += f"\n\n{extra_instructions}"
         
         check_prompt += """
-Your task is to go through tests one by one check and think step by step about the following:
-"If we implemented the function as described in the problem statement, would the test pass?"
-
+Your task is to go through tests and point out incorrect tests.
+Make sure that if we implemented the function as described in the problem statement the test would pass.
 Also, do the tests collectively cover all requirements in the problem statement?
 """  
         feedback = self._model.generate_code(check_prompt, self.system_prompt)

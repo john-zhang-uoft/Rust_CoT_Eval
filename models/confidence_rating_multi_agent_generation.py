@@ -68,6 +68,7 @@ class ConfidenceMultiAgentModel:
         confidence_threshold: int = 70,
         low_confidence_threshold: int = 30,
         keep_generated_function_signature: bool = True,
+        tester_knows_cases: bool = False,
         verbose: bool = False
     ):
         """
@@ -82,6 +83,7 @@ class ConfidenceMultiAgentModel:
             max_planning_attempts: Maximum number of planning attempts
             confidence_threshold: Threshold for considering an agent confident (0-100)
             low_confidence_threshold: Threshold for considering an agent not confident (0-100)
+            tester_knows_cases: Whether to use the test cases from the dataset
             verbose: Whether to print detailed logs
         """
         self.language = language
@@ -90,6 +92,7 @@ class ConfidenceMultiAgentModel:
         self.confidence_threshold = confidence_threshold
         self.low_confidence_threshold = low_confidence_threshold
         self.keep_generated_function_signature = keep_generated_function_signature
+        self.tester_knows_cases = tester_knows_cases
         self.verbose = verbose
         
         # Initialize agents
@@ -127,7 +130,8 @@ class ConfidenceMultiAgentModel:
         self, 
         prompt: str, 
         declaration: str, 
-        entry_point: str
+        entry_point: str,
+        test_code: Optional[str] = None
     ) -> Tuple[List[str], Dict[str, Any]]:
         """
         Generate code using the multi-agent system
@@ -136,6 +140,7 @@ class ConfidenceMultiAgentModel:
             prompt: The problem statement
             declaration: The function declaration
             entry_point: The function name
+            test_code: The provided test code (if tester_knows_cases is True)
             
         Returns:
             Tuple containing:
@@ -288,82 +293,95 @@ Implement the solution in Rust according to this function signature:
                 # Step 2: Generate tests
                 self._log(f"\nSTEP 2: GENERATING TESTS...", "cyan")
                 
-                # Check if coder has low confidence
-                low_confidence_message = ""
-                if coder_confidence < self.low_confidence_threshold:
-                    low_confidence_message = "I'm not really sure if this solution is correct..."
-                    self._log(f"Adding low confidence message to test generator: {low_confidence_message}", "yellow")
-                
-                tests_generated, test_code, test_gen_details = self.tester.generate_tests(
-                    prompt, declaration, full_code, entry_point, extra_instructions=low_confidence_message
-                )
-                
-                if not tests_generated:
-                    self._log(f"Could not generate tests: {test_code}", "red")
+                if self.tester_knows_cases and test_code:
+                    # Use the prebuilt test cases if the flag is enabled and test_code is provided
+                    self._log(f"Using prebuilt test cases from the dataset", "cyan")
+                    tests_generated = True
+                    test_gen_details = {"source": "dataset"}
+                    refined_test_code = test_code
+                    # Set tester confidence high when using dataset tests
+                    tester_confidence = 100
+                    tester_explanation = "Using provided test cases from the dataset"
+                    # Initialize variables that would normally be set during test generation/refinement
+                    test_quality_feedback = "Using dataset test cases"
+                    refined_test_details = {"source": "dataset"}
+                else:
+                    # Check if coder has low confidence
+                    low_confidence_message = ""
+                    if coder_confidence < self.low_confidence_threshold:
+                        low_confidence_message = "I'm not really sure if this solution is correct..."
+                        self._log(f"Adding low confidence message to test generator: {low_confidence_message}", "yellow")
                     
-                    # Store iteration data
-                    iteration_data = {
-                        "iteration": iterations,
-                        "code": full_code,
-                        "feedback": f"Test generation failed: {test_code}",
-                        "success": False,
-                        "compilation": compile_details,
-                        "test_generation": test_gen_details,
-                        "confidence": {
-                            "planner": planner_confidence,
-                            "coder": coder_confidence,
-                            "tester": 0  # No tester confidence if test generation fails
+                    tests_generated, test_code, test_gen_details = self.tester.generate_tests(
+                        prompt, declaration, full_code, entry_point, extra_instructions=low_confidence_message
+                    )
+                    
+                    if not tests_generated:
+                        self._log(f"Could not generate tests: {test_code}", "red")
+                        
+                        # Store iteration data
+                        iteration_data = {
+                            "iteration": iterations,
+                            "code": full_code,
+                            "feedback": f"Test generation failed: {test_code}",
+                            "success": False,
+                            "compilation": compile_details,
+                            "test_generation": test_gen_details,
+                            "confidence": {
+                                "planner": planner_confidence,
+                                "coder": coder_confidence,
+                                "tester": 0  # No tester confidence if test generation fails
+                            }
                         }
-                    }
-                    iterations_data.append(iteration_data)
+                        iterations_data.append(iteration_data)
+                        
+                        # Exit with failure
+                        success = False
+                        exit_reason = "test_generation_failed"
+                        break
                     
-                    # Exit with failure
-                    success = False
-                    exit_reason = "test_generation_failed"
-                    break
-                
-                # Step 3: Check test quality
-                self._log(f"\nSTEP 3: CHECKING TEST QUALITY...", "cyan")
-                
-                # Check if tester has low confidence
-                test_low_confidence_message = ""
-                if tester_confidence < self.low_confidence_threshold:
-                    test_low_confidence_message = "I'm not really sure if these tests are correct..."
-                    self._log(f"Adding low confidence message to test checker: {test_low_confidence_message}", "yellow")
-                
-                test_quality_feedback = self.test_checker.check_tests(
-                    prompt, declaration, full_code, test_code, entry_point, extra_instructions=test_low_confidence_message
-                )
-                
-                self._log(f"Test quality feedback: {test_quality_feedback}", "cyan")
-                
-                # Step 4: Refine tests based on feedback
-                self._log(f"\nSTEP 4: REFINING TESTS...", "cyan")
-                extra_instructions = f"""
+                    # Step 3: Check test quality (Skip this step if using prebuilt tests)
+                    self._log(f"\nSTEP 3: CHECKING TEST QUALITY...", "cyan")
+                    
+                    # Check if tester has low confidence
+                    test_low_confidence_message = ""
+                    if tester_confidence < self.low_confidence_threshold:
+                        test_low_confidence_message = "I'm not really sure if these tests are correct..."
+                        self._log(f"Adding low confidence message to test checker: {test_low_confidence_message}", "yellow")
+                    
+                    test_quality_feedback = self.test_checker.check_tests(
+                        prompt, declaration, full_code, test_code, entry_point, extra_instructions=test_low_confidence_message
+                    )
+                    
+                    self._log(f"Test quality feedback: {test_quality_feedback}", "cyan")
+                    
+                    # Step 4: Refine tests based on feedback
+                    self._log(f"\nSTEP 4: REFINING TESTS...", "cyan")
+                    extra_instructions = f"""
 Based on the review, improve your tests to better match the requirements.
 Feedback on your tests:
 {test_quality_feedback}
 """
-                tests_refined, refined_test_code, refined_test_details = self.tester.generate_tests(
-                    prompt, declaration, full_code, entry_point, extra_instructions=extra_instructions
-                )
-                
-                if not tests_refined:
-                    self._log(f"Could not refine tests: {refined_test_code}", "red")
-                    # Fall back to original tests
-                    refined_test_code = test_code
-                    self._log(f"Falling back to original tests", "yellow")
-                
-                # Check tester confidence in the test code
-                tester_system_prompt = self.tester.system_prompt
-                tester_confidence, tester_explanation = self.confidence_checker.check_confidence(
-                    tester_system_prompt,
-                    refined_test_code,
-                    extra_instructions
-                )
-                
-                self._log(f"Tester confidence in tests: {tester_confidence}/100", "cyan")
-                self._log(f"Tester explanation: {tester_explanation}", "cyan")
+                    tests_refined, refined_test_code, refined_test_details = self.tester.generate_tests(
+                        prompt, declaration, full_code, entry_point, extra_instructions=extra_instructions
+                    )
+                    
+                    if not tests_refined:
+                        self._log(f"Could not refine tests: {refined_test_code}", "red")
+                        # Fall back to original tests
+                        refined_test_code = test_code
+                        self._log(f"Falling back to original tests", "yellow")
+                    
+                    # Check tester confidence in the test code
+                    tester_system_prompt = self.tester.system_prompt
+                    tester_confidence, tester_explanation = self.confidence_checker.check_confidence(
+                        tester_system_prompt,
+                        refined_test_code,
+                        extra_instructions
+                    )
+                    
+                    self._log(f"Tester confidence in tests: {tester_confidence}/100", "cyan")
+                    self._log(f"Tester explanation: {tester_explanation}", "cyan")
                 
                 # Step 5: Run tests
                 self._log(f"\nSTEP 5: RUNNING TESTS...", "cyan")
@@ -493,6 +511,8 @@ def create_confidence_multi_agent_model(
     max_planning_attempts: int = 2,
     confidence_threshold: int = 70,
     low_confidence_threshold: int = 30,
+    keep_generated_function_signature: bool = True,
+    tester_knows_cases: bool = False,
     verbose: bool = False
 ) -> ConfidenceMultiAgentModel:
     """
@@ -512,6 +532,7 @@ def create_confidence_multi_agent_model(
         max_planning_attempts: Maximum number of planning attempts
         confidence_threshold: Threshold for considering an agent confident (0-100)
         low_confidence_threshold: Threshold for considering an agent not confident (0-100)
+        tester_knows_cases: Whether to use the test cases from the dataset
         verbose: Whether to print detailed logs
         
     Returns:
@@ -532,6 +553,8 @@ def create_confidence_multi_agent_model(
         max_planning_attempts=max_planning_attempts,
         confidence_threshold=confidence_threshold,
         low_confidence_threshold=low_confidence_threshold,
+        keep_generated_function_signature=keep_generated_function_signature,
+        tester_knows_cases=tester_knows_cases,
         verbose=verbose
     )
     
@@ -571,6 +594,8 @@ if __name__ == "__main__":
                         help="Limit the number of samples to process")
     parser.add_argument("--keep_generated_function_signature", type=bool, default=True,
                         help="Keep the generated function signature")
+    parser.add_argument("--tester_knows_cases", action="store_true",
+                        help="Use test cases from the dataset instead of generating tests")
     parser.add_argument("--verbose", action="store_true",
                         help="Print detailed logs")
                         
@@ -602,6 +627,7 @@ if __name__ == "__main__":
         max_iterations=args.max_iterations,
         max_planning_attempts=args.max_planning_attempts,
         keep_generated_function_signature=args.keep_generated_function_signature,
+        tester_knows_cases=args.tester_knows_cases,
         verbose=args.verbose
     )
     
@@ -622,10 +648,14 @@ if __name__ == "__main__":
         declaration = sample["declaration"]
         entry_point = sample["entry_point"]
         
+        # Get the test code from the sample if tester_knows_cases is enabled
+        test_code = sample.get("test") if args.tester_knows_cases else None
+        
         final_code, generation_details = multi_agent.generate_code(
             prompt, 
             declaration=declaration, 
-            entry_point=entry_point
+            entry_point=entry_point,
+            test_code=test_code
         )
         final_code = final_code[0]
         
