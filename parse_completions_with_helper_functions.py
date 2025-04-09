@@ -5,12 +5,105 @@ import re
 from tqdm import tqdm
 from parsers.content_parser import ContentParser, ParseError
 
+def find_function_bounds(code: str, entry_point: str) -> tuple[int, int]:
+    """
+    Find the start and end positions of a function by counting braces.
+    First finds the line containing 'fn entry_point', then counts braces until balanced.
+    
+    Args:
+        code: The source code to search
+        entry_point: The name of the function to find
+        
+    Returns:
+        Tuple of (start_pos, end_pos) or (-1, -1) if not found
+    """
+    # Find the line containing the function declaration
+    lines = code.split('\n')
+    fn_line = -1
+    
+    # Look for the function declaration, including possible attributes
+    for i, line in enumerate(lines):
+        if f"fn {entry_point}" in line:
+            # Look backwards for attributes
+            fn_line = i
+            while fn_line > 0 and lines[fn_line - 1].strip().startswith('#['):
+                fn_line -= 1
+            break
+    
+    if fn_line == -1:
+        return (-1, -1)
+        
+    # Get the position in the original string
+    start_pos = sum(len(l) + 1 for l in lines[:fn_line])
+    pos = start_pos
+    
+    # Find position after the first line (which contains the opening brace)
+    while pos < len(code) and code[pos] != '\n':
+        pos += 1
+    pos += 1
+    
+    # Now count braces until we find the matching end
+    brace_count = 1  # We already found the opening brace
+    in_string = False
+    in_char = False
+    in_line_comment = False
+    in_block_comment = False
+    escaped = False
+    
+    while pos < len(code):
+        char = code[pos]
+        next_char = code[pos + 1] if pos + 1 < len(code) else ''
+        
+        # Handle escaping
+        if char == '\\' and not escaped:
+            escaped = True
+            pos += 1
+            continue
+            
+        # Handle string literals
+        if not escaped and char in ('"', "'") and not in_line_comment and not in_block_comment:
+            if not in_string and not in_char:
+                # Starting a string/char
+                in_string = char == '"'
+                in_char = char == "'"
+            elif (in_string and char == '"') or (in_char and char == "'"):
+                in_string = False
+                in_char = False
+                    
+        # Handle comments
+        elif not escaped and char == '/' and next_char == '/' and not in_string and not in_char and not in_block_comment:
+            in_line_comment = True
+            pos += 1
+        elif not escaped and char == '/' and next_char == '*' and not in_string and not in_char and not in_line_comment:
+            in_block_comment = True
+            pos += 1
+        elif not escaped and char == '*' and next_char == '/' and in_block_comment:
+            in_block_comment = False
+            pos += 1
+        elif char == '\n' and in_line_comment:
+            in_line_comment = False
+            
+        # Count braces if we're not in a string/comment
+        elif not in_string and not in_char and not in_line_comment and not in_block_comment:
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    return (start_pos, pos + 1)
+                    
+        escaped = False
+        pos += 1
+        
+    return (-1, -1)  # No matching end brace found
+
 def process_code(code: str, entry_point: str) -> str:
     """
     Process the code by:
     1. Removing any test modules
-    2. Moving the entry point function to the front
-    3. Keeping all other functions in their original order
+    2. Moving the specified function to the front
+    3. Keeping all other code (structs, enums, other functions) intact
+    4. Removing the signature of the target function
     
     Args:
         code: The input code string
@@ -22,37 +115,97 @@ def process_code(code: str, entry_point: str) -> str:
     # Remove test module if present
     test_module_start = code.find("#[cfg(test)]")
     if test_module_start != -1:
-        code = code[:test_module_start]
-    
-    # Find all function definitions
-    function_pattern = re.compile(r'\bfn\s+([a-zA-Z0-9_]+).*?(?=\bfn\s+|\Z)', re.DOTALL)
-    functions = list(function_pattern.finditer(code))
-    
-    if not functions:
+        code = code[:test_module_start].strip()
+        
+    # Find the target function
+    start_pos, end_pos = find_function_bounds(code, entry_point)
+    if start_pos == -1:  # Function not found
         return code
         
-    # Find the entry point function and other functions
-    entry_point_fn = None
-    other_functions = []
+    # Extract the function and remove its signature
+    target_fn = code[start_pos:end_pos]
+    # Find the opening brace
+    brace_pos = target_fn.find('{')
+    if brace_pos != -1:
+        # Keep only what's after the opening brace
+        target_fn = target_fn[brace_pos+1:].strip()
+        # Find the last closing brace that matches the function's opening brace
+        brace_count = 1
+        pos = 0
+        while pos < len(target_fn):
+            if target_fn[pos] == '{':
+                brace_count += 1
+            elif target_fn[pos] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    # Found the matching closing brace
+                    target_fn = target_fn[:pos].strip()
+                    break
+            pos += 1
     
-    for match in functions:
-        fn_name = match.group(1)
-        if fn_name == entry_point:
-            entry_point_fn = match
-        elif fn_name != "main":  # Skip main function
-            other_functions.append(match)
+    # Split the code into sections
+    lines = code.split('\n')
+    
+    # Find where the actual code starts (after imports/types/etc)
+    code_start = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and not (
+            stripped.startswith('use ') or
+            stripped.startswith('type ') or
+            stripped.startswith('const ') or
+            stripped.startswith('static ') or
+            stripped.startswith('extern ') or
+            stripped.startswith('//') or
+            stripped.startswith('/*') or
+            stripped.startswith('#[') or  # Skip attributes
+            not stripped  # Skip empty lines
+        ):
+            code_start = i
+            break
             
-    if not entry_point_fn:
-        return code
-        
-    # Combine functions with entry point first
-    parser = ContentParser()
-
-    result = parser("", entry_point_fn.group(0), entry_point)
-    if other_functions:
-        result += "\n\n" + "\n\n".join(f.group(0) for f in other_functions)
+    # Split into prefix and code body
+    prefix = '\n'.join(lines[:code_start]).strip()
+    code_body = '\n'.join(lines[code_start:]).strip()
     
-    return result
+    # Remove the target function from the code body
+    # Find the line containing the function
+    body_lines = code_body.split('\n')
+    fn_start = -1
+    for i, line in enumerate(body_lines):
+        if f"fn {entry_point}" in line:
+            fn_start = i
+            break
+            
+    if fn_start != -1:
+        # Remove the function and any preceding attributes
+        while fn_start > 0 and body_lines[fn_start - 1].strip().startswith('#['):
+            fn_start -= 1
+            
+        # Find the end of the function
+        fn_end = fn_start
+        brace_count = 0
+        while fn_end < len(body_lines):
+            line = body_lines[fn_end]
+            brace_count += line.count('{')
+            brace_count -= line.count('}')
+            if brace_count == 0 and fn_end > fn_start:
+                break
+            fn_end += 1
+            
+        # Remove the function
+        body_lines = body_lines[:fn_start] + body_lines[fn_end+1:]
+        code_body = '\n'.join(body_lines).strip()
+    
+    # Combine with target function at the start of the code section
+    result_parts = []
+    if prefix:
+        result_parts.append(prefix + '\n')
+    result_parts.append(target_fn + '\n}\n')
+    if code_body:
+        result_parts.append(code_body)
+        
+    return "\n\n".join(part for part in result_parts if part)
 
 def parse_completions(input_file, output_file, verbose=False, generation_field_name="raw_generation"):
     """
