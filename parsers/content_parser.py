@@ -69,6 +69,9 @@ class ContentParser:
         brace_counter = 0
         in_main_function = False
         
+        # Keep track of functions we've already added
+        added_functions = set()
+        
         for i, line in enumerate(lines):
             # Skip import statements
             if line.strip().startswith("use "):
@@ -91,6 +94,12 @@ class ContentParser:
             
             # If not in main function and not an import, keep the line
             result_lines.append(line)
+            
+            # If this line starts a function, add it to our set of added functions
+            if line.strip().startswith("fn "):
+                # Extract the function name
+                fn_name = line.strip().split("fn ")[1].split("(")[0].strip()
+                added_functions.add(fn_name)
         
         # Ensure our entry point is included (in case it was somehow missed)
         entry_point_found = False
@@ -110,10 +119,15 @@ class ContentParser:
                 entry_point_pattern = re.compile(r'\bfn\s+' + re.escape(variation) + r'.*?(?=\bfn\s+|\Z)', re.DOTALL)
                 match = entry_point_pattern.search(script_without_tests)
                 if match:
-                    debug(f"Found entry point variation: {variation}", self.verbose)
-                    result_lines.append(match.group(0))
-                    entry_point_found = True
-                    break
+                    # Extract the function name from the match
+                    fn_name = match.group(0).split("fn ")[1].split("(")[0].strip()
+                    # Only add if we haven't already added this function
+                    if fn_name not in added_functions:
+                        debug(f"Found entry point variation: {variation}", self.verbose)
+                        result_lines.append(match.group(0))
+                        added_functions.add(fn_name)
+                        entry_point_found = True
+                        break
         
         if result_lines:
             result = "\n".join(result_lines)

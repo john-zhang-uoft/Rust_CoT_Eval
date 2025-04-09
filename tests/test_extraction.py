@@ -189,5 +189,56 @@ fn main() {
         # Assert that the use of std::ascii::AsciiExt is not included
         self.assertNotIn("use std::ascii::AsciiExt;", result)
         
+
+    def test_real_world_example(self):
+        to_parse = """Here is the implementation of the `maximum_120` function in Rust according to the provided plan:
+
+```rust
+use std::{slice::Iter, cmp::{max, self}, mem::replace, collections::{HashSet, HashMap}, ops::Index, ascii::AsciiExt};
+use rand::Rng;
+use regex::Regex;
+use md5;
+use std::any::{Any, TypeId};
+
+fn maximum_120(arr: Vec<i32>, k: i32) -> Vec<i32> {
+    // Check if k is 0, if so return an empty list
+    if k == 0 {
+        return Vec::new();
+    }
+
+    // Sort the input array arr in descending order
+    let mut sorted_arr = arr;
+    sorted_arr.sort_unstable_by(|a, b| b.cmp(a));
+
+    // Initialize an empty list result
+    let mut result: Vec<i32> = Vec::new();
+
+    // Iterate over the sorted array arr and add the first k elements to the result list
+    for i in 0..k as usize {
+        result.push(sorted_arr[i]);
+    }
+
+    // Sort the result list in ascending order
+    result.sort_unstable();
+
+    // Return the result list
+    result
+}
+
+fn main() {
+    let arr = vec![1, 2, 3, 4, 5];
+    let k = 3;
+    let result = maximum_120(arr, k);
+    println!("{:?}", result);
+}
+```
+"""
+        entry_point = "maximum"
+        prompt = "Implement the `maximum_120` function in Rust"
+        result = self.parser(prompt, to_parse, entry_point, extract_all=True)
+        print(result)
+
+        assert(result.count("fn maximum_120(arr: Vec<i32>, k: i32) -> Vec<i32>") == 1)
+
 if __name__ == "__main__":
     unittest.main() 
