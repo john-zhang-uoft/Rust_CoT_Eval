@@ -678,7 +678,7 @@ if __name__ == "__main__":
         
         results.append(result)
     
-    output_file = args.output_file or f"confidence_multi_agent_results_{args.language}.jsonl"
+    output_file = args.output_file or f"confidence_multi_agent_results_{args.language}_{args.planner_model_name}_{args.coder_model_name}_{args.tester_model_name}.jsonl"
     with jsonlines.open(output_file, "w") as writer:
         writer.write_all(results)
         

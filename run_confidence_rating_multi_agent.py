@@ -220,7 +220,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_planning_attempts", type=int, default=2,
                         help="Maximum number of planning attempts")
     parser.add_argument("--output_file", type=str, default=None,
-                        help="Output file path (default: parallel_confidence_multi_agent_results_{language}.jsonl)")
+                        help="Output file path (default: parallel_confidence_multi_agent_results_{language}_{planner_model_name}_{coder_model_name}_{tester_model_name}.jsonl)")
     parser.add_argument("--limit", type=int, default=None,
                         help="Limit the number of samples to process")
     parser.add_argument("--verbose", action="store_true",
@@ -254,7 +254,7 @@ if __name__ == "__main__":
     total_duration = time.time() - start_time
     
     # Save results
-    output_file = args.output_file or f"parallel_confidence_multi_agent_results_{args.language}.jsonl"
+    output_file = args.output_file or f"parallel_confidence_multi_agent_results_{args.language}_{args.planner_model_name}_{args.coder_model_name}_{args.tester_model_name}.jsonl"
     with jsonlines.open(output_file, "w") as writer:
         writer.write_all(results)
         
