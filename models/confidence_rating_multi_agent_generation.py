@@ -259,7 +259,7 @@ Implement the solution in Rust according to this function signature:
                 # Step 1: Check if the code compiles
                 self._log(f"\nSTEP 1: CHECKING COMPILATION...", "cyan")
                 compiles, compile_feedback, compile_details = self.tester.check_compilation(declaration, full_code)
-                compilation_black_board += compile_feedback
+                compilation_black_board += "Code:\n\n" + full_code + "\n\nCompilation feedback:\n\n" + compile_feedback
                 if not compiles:
                     self._log(f"Compilation failed: {compile_feedback}", "red")
                     

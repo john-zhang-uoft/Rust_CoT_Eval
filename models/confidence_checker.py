@@ -51,7 +51,8 @@ class ConfidenceChecker:
         self, 
         agent_role_system_message: str,
         agent_generation: str,
-        context: str
+        context: str,
+        additional_post_prompt: str = ""
     ) -> Tuple[int, str]:
         """
         Check the confidence of the agent in its output
@@ -84,7 +85,8 @@ class ConfidenceChecker:
         messages.append({ "role": "assistant", "content": agent_generation })
         
         prompt = f"""
-How confident are you in your response?
+{additional_post_prompt}
+How likey is your code correct for solving the problem?
 Think step by step about your response and provide a confidence score between 0 and 100 in the following format:
 
 {{
