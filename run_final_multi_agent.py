@@ -15,7 +15,7 @@ import jsonlines
 from dotenv import load_dotenv
 from datasets import load_dataset
 
-from models.confidence_rating_multi_agent_generation import create_confidence_multi_agent_model, get_prompt_from_sample
+from models.final_multi_agent_generation import create_confidence_multi_agent_model, get_prompt_from_sample
 
 
 def process_sample(args, sample_with_idx, is_verbose=False):
