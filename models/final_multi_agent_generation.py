@@ -72,6 +72,7 @@ class ConfidenceMultiAgentModel:
         disable_plan_restart: bool = False,
         disable_system_prompts: bool = False,
         no_planner: bool = False,
+        no_compilation_check: bool = False,
         verbose: bool = False
     ):
         """
@@ -90,6 +91,7 @@ class ConfidenceMultiAgentModel:
             disable_plan_restart: Whether to disable restarting from plan when confidence is low
             disable_system_prompts: Whether to disable all system prompts
             no_planner: Whether to skip the planning phase entirely
+            no_compilation_check: Whether to skip compilation checks
             verbose: Whether to print detailed logs
         """
         self.language = language
@@ -102,6 +104,7 @@ class ConfidenceMultiAgentModel:
         self.disable_plan_restart = disable_plan_restart
         self.disable_system_prompts = disable_system_prompts
         self.no_planner = no_planner
+        self.no_compilation_check = no_compilation_check
         self.verbose = verbose
         
         # Initialize agents
@@ -123,6 +126,8 @@ class ConfidenceMultiAgentModel:
         self._log(f"Disable plan restart: {disable_plan_restart}, Disable system prompts: {disable_system_prompts}")
         if no_planner:
             self._log(f"Planning phase disabled, starting directly with coding", "yellow")
+        if no_compilation_check:
+            self._log(f"Compilation checks disabled, skipping compilation verification step", "yellow")
     
     def _log(self, message: str, color: str = None, always: bool = False):
         """
@@ -263,10 +268,20 @@ Implement the solution in Rust according to this function signature:
                         self._log("Using declaration + implementation", "cyan")
                         full_code = f"{declaration}\n{current_extracted_code}"
 
-                    # Step 1: Check if the code compiles
-                    self._log(f"\nSTEP 1: CHECKING COMPILATION...", "cyan")
-                    compiles, compile_feedback, compile_details = self.tester.check_compilation(declaration, full_code)
-                    compilation_black_board += "Code:\n\n" + full_code + "\n\nCompilation feedback:\n\n" + compile_feedback
+                    # Step 1: Check if the code compiles (skip if no_compilation_check is True)
+                    compile_feedback = ""
+                    compile_details = {}
+                    compiles = True
+                    
+                    if not self.no_compilation_check:
+                        self._log(f"\nSTEP 1: CHECKING COMPILATION...", "cyan")
+                        compiles, compile_feedback, compile_details = self.tester.check_compilation(declaration, full_code)
+                        compilation_black_board += "Code:\n\n" + full_code + "\n\nCompilation feedback:\n\n" + compile_feedback
+                    else:
+                        self._log(f"\nSTEP 1: SKIPPING COMPILATION CHECK...", "cyan")
+                        compile_feedback = "Compilation check skipped"
+                        compile_details = {"skipped": True}
+                    
                     if not compiles:
                         self._log(f"Compilation failed: {compile_feedback}", "red")
                         
@@ -559,10 +574,20 @@ Implement the solution in Rust according to this function signature:
                     self._log("Using declaration + implementation", "cyan")
                     full_code = f"{declaration}\n{current_extracted_code}"
 
-                # Step 1: Check if the code compiles
-                self._log(f"\nSTEP 1: CHECKING COMPILATION...", "cyan")
-                compiles, compile_feedback, compile_details = self.tester.check_compilation(declaration, full_code)
-                compilation_black_board += "Code:\n\n" + full_code + "\n\nCompilation feedback:\n\n" + compile_feedback
+                # Step 1: Check if the code compiles (skip if no_compilation_check is True)
+                compile_feedback = ""
+                compile_details = {}
+                compiles = True
+                
+                if not self.no_compilation_check:
+                    self._log(f"\nSTEP 1: CHECKING COMPILATION...", "cyan")
+                    compiles, compile_feedback, compile_details = self.tester.check_compilation(declaration, full_code)
+                    compilation_black_board += "Code:\n\n" + full_code + "\n\nCompilation feedback:\n\n" + compile_feedback
+                else:
+                    self._log(f"\nSTEP 1: SKIPPING COMPILATION CHECK...", "cyan")
+                    compile_feedback = "Compilation check skipped"
+                    compile_details = {"skipped": True}
+                
                 if not compiles:
                     self._log(f"Compilation failed: {compile_feedback}", "red")
                     
@@ -836,6 +861,7 @@ def create_confidence_multi_agent_model(
     disable_plan_restart: bool = False,
     disable_system_prompts: bool = False,
     no_planner: bool = False,
+    no_compilation_check: bool = False,
     verbose: bool = False
 ) -> ConfidenceMultiAgentModel:
     """
@@ -859,6 +885,7 @@ def create_confidence_multi_agent_model(
         disable_plan_restart: Whether to disable restarting from plan when confidence is low
         disable_system_prompts: Whether to disable all system prompts
         no_planner: Whether to skip the planning phase entirely
+        no_compilation_check: Whether to skip compilation checks
         verbose: Whether to print detailed logs
         
     Returns:
@@ -884,6 +911,7 @@ def create_confidence_multi_agent_model(
         disable_plan_restart=disable_plan_restart,
         disable_system_prompts=disable_system_prompts,
         no_planner=no_planner,
+        no_compilation_check=no_compilation_check,
         verbose=verbose
     )
     
@@ -941,6 +969,8 @@ if __name__ == "__main__":
                         help="Print detailed logs")
     parser.add_argument("--no_planner", action="store_true",
                         help="Skip the planning phase entirely")
+    parser.add_argument("--no_compilation_check", action="store_true",
+                        help="Skip compilation checks during code generation")
                         
     args = parser.parse_args()
     
@@ -989,6 +1019,7 @@ if __name__ == "__main__":
         disable_plan_restart=args.disable_plan_restart,
         disable_system_prompts=args.disable_system_prompts,
         no_planner=args.no_planner,
+        no_compilation_check=args.no_compilation_check,
         verbose=args.verbose
     )
     

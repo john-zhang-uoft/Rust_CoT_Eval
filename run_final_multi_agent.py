@@ -53,6 +53,7 @@ def process_sample(args, sample_with_idx, is_verbose=False):
             disable_plan_restart=args.disable_plan_restart,
             disable_system_prompts=args.disable_system_prompts,
             no_planner=args.no_planner,
+            no_compilation_check=args.no_compilation_check,
             verbose=is_verbose
         )
         
@@ -250,6 +251,8 @@ if __name__ == "__main__":
                         help="Disable all system prompts for the models")
     parser.add_argument("--no_planner", action="store_true",
                         help="Skip the planning phase entirely and go straight to coding")
+    parser.add_argument("--no_compilation_check", action="store_true",
+                        help="Skip compilation checks during code generation")
                         
     args = parser.parse_args()
     
