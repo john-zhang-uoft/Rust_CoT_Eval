@@ -20,7 +20,8 @@ class ConfidenceChecker:
     def __init__(
         self,
         model: CodeGenerationModel,
-        verbose: bool = False
+        verbose: bool = False,
+        disable_system_prompts: bool = False
     ):
         """
         Initialize a confidence checker
@@ -28,9 +29,14 @@ class ConfidenceChecker:
         Args:
             model: The underlying language model
             verbose: Whether to print detailed logs
+            disable_system_prompts: Whether to disable system prompts
         """
         self._model = model
         self._verbose = verbose
+        self._disable_system_prompts = disable_system_prompts
+        
+        if verbose and disable_system_prompts:
+            print(termcolor.colored("System prompts disabled for ConfidenceChecker", "yellow"))
     
     def _log(self, message: str, color: str = None, always: bool = False):
         """
@@ -68,10 +74,10 @@ class ConfidenceChecker:
             - Explanation of the confidence assessment
         """
         
-        # Create a system message with the agent role
+        # Create a system message with the agent role, or empty if system prompts are disabled
         system_message = {
             "role": "system",
-            "content": agent_role_system_message
+            "content": "" if self._disable_system_prompts else agent_role_system_message
         }
         
         # Build the message list starting with the system message
