@@ -13,16 +13,24 @@ class PlannerAgent:
     Come up with a detailed pseudocode plan for solving problems, do not write any code.
     """
 
-    def __init__(self, model: CodeGenerationModel, verbose: bool = False):
+    def __init__(self, model: CodeGenerationModel, verbose: bool = False, disable_system_prompts: bool = False):
         """
         Initialize a planner agent
         
         Args:
             model: The underlying language model
             verbose: Whether to print detailed logs
+            disable_system_prompts: Whether to disable system prompts
         """
         self._model = model
         self._verbose = verbose
+        self._disable_system_prompts = disable_system_prompts
+        
+        # If system prompts are disabled, use empty string
+        self.system_prompt = "" if disable_system_prompts else self.system_prompt
+        
+        if verbose and disable_system_prompts:
+            print(termcolor.colored("System prompts disabled for PlannerAgent", "yellow"))
 
     def extract_json_from_response(self, response: str) -> Dict[str, Any]:
         """
@@ -92,7 +100,7 @@ Think step by step about the completion of the function, then provide your respo
 }}
 """
 
-        response = self._model.generate_code(planning_prompt, self.system_prompt)
+        response = self._model.generate_code(planning_prompt, self.system_prompt if not self._disable_system_prompts else "")
         response = response[0]
 
         if self._verbose:
@@ -146,7 +154,7 @@ Think step by step about the completion of the function, then provide your respo
   "difficulty": number between 1-5
 }}
 """
-        response = self._model.generate_code(planning_prompt, self.system_prompt)
+        response = self._model.generate_code(planning_prompt, self.system_prompt if not self._disable_system_prompts else "")
         response = response[0] if isinstance(response, list) else response
         
         if self._verbose:

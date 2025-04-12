@@ -48,6 +48,11 @@ def process_sample(args, sample_with_idx, is_verbose=False):
             max_planning_attempts=args.max_planning_attempts,
             keep_generated_function_signature=args.keep_generated_function_signature,
             tester_knows_cases=args.tester_knows_cases,
+            confidence_threshold=args.confidence_threshold,
+            low_confidence_threshold=args.low_confidence_threshold,
+            disable_plan_restart=args.disable_plan_restart,
+            disable_system_prompts=args.disable_system_prompts,
+            no_planner=args.no_planner,
             verbose=is_verbose
         )
         
@@ -231,6 +236,20 @@ if __name__ == "__main__":
                         help="Keep the generated function signature")
     parser.add_argument("--tester_knows_cases", action="store_true",
                         help="Use test cases from the dataset instead of generating tests")
+    parser.add_argument("--confidence_threshold", type=int, default=70,
+                        help="Threshold for considering an agent confident (0-100)")
+    parser.add_argument("--low_confidence_threshold", type=int, default=30,
+                        help="Threshold for considering an agent not confident (0-100)")
+    parser.add_argument("--max_confidence", action="store_true",
+                        help="Set confidence to maximum (100) for all models")
+    parser.add_argument("--min_confidence", action="store_true",
+                        help="Set confidence to minimum (0) for all models")
+    parser.add_argument("--disable_plan_restart", action="store_true",
+                        help="Disable restarting from plan when confidence is low")
+    parser.add_argument("--disable_system_prompts", action="store_true",
+                        help="Disable all system prompts for the models")
+    parser.add_argument("--no_planner", action="store_true",
+                        help="Skip the planning phase entirely and go straight to coding")
                         
     args = parser.parse_args()
     
@@ -243,6 +262,19 @@ if __name__ == "__main__":
     args.coder_model_name = os.getenv("CODER_MODEL_NAME", args.coder_model_name)
     args.tester_model_type = os.getenv("TESTER_MODEL_TYPE", args.tester_model_type)
     args.tester_model_name = os.getenv("TESTER_MODEL_NAME", args.tester_model_name)
+    
+    # Set max confidence if requested
+    if args.max_confidence:
+        args.confidence_threshold = 100
+        args.low_confidence_threshold = 100
+        print("Using maximum confidence settings (confidence=100, low_confidence=100)")
+    
+    # Set min confidence if requested
+    if args.min_confidence:
+        args.confidence_threshold = 0
+        args.low_confidence_threshold = 0
+        args.disable_plan_restart = True
+        print("Using minimum confidence settings (confidence=0, low_confidence=0, plan restart disabled)")
     
     # Record start time
     start_time = time.time()

@@ -25,7 +25,7 @@ You are a careful Rust quality assurance expert.
 Your task is to carefully review a Rust code implementation and provide feedback on its correctness.
 """
 
-    def __init__(self, model: CodeGenerationModel, timeout: int = DEFAULT_TIMEOUT, sample_idx: int = 0, rust_dir: Optional[str] = None, thread_id: Optional[int] = None, keep_generated_function_signature: bool = False, verbose: bool = True):
+    def __init__(self, model: CodeGenerationModel, timeout: int = DEFAULT_TIMEOUT, sample_idx: int = 0, rust_dir: Optional[str] = None, thread_id: Optional[int] = None, keep_generated_function_signature: bool = False, disable_system_prompts: bool = False, verbose: bool = True):
         self.model = model
         self.timeout = timeout
         self.sample_idx = sample_idx  # Store the sample index for file naming
@@ -33,6 +33,13 @@ Your task is to carefully review a Rust code implementation and provide feedback
         self.parser = ContentParser()  # Initialize ContentParser for parsing code
         self._verbose = verbose
         self._keep_generated_function_signature = keep_generated_function_signature  # Whether to keep function signatures in the generated code
+        self._disable_system_prompts = disable_system_prompts
+        
+        # If system prompts are disabled, use empty string
+        self.system_prompt = "" if disable_system_prompts else self.system_prompt
+        
+        if verbose and disable_system_prompts:
+            print(termcolor.colored("System prompts disabled for RustCodeReviewerAgent", "yellow"))
         
         # Get absolute path to project root (where this script is located)
         self.project_root = os.path.dirname(os.path.abspath(__file__))
@@ -381,7 +388,7 @@ Assume that the function will be called with valid inputs described in the probl
 Write up to 5 unit tests that would be enough to verify the function works correctly.
 Do not add long test cases that iterate over a range of values, instead focus on testing the function with specific values.
 """
-        raw_test_code = self.model.generate_code(test_prompt, system_prompt=self.system_prompt, n=1)[0]
+        raw_test_code = self.model.generate_code(test_prompt, system_prompt=self.system_prompt if not self._disable_system_prompts else "", n=1)[0]
         
         # Record duration
         details = {
@@ -589,74 +596,59 @@ Do not add long test cases that iterate over a range of values, instead focus on
         return True, "All tests passed.", details
     
     def generate_detailed_feedback(self, prompt: str, declaration: str, implementation: str, tests: str, test_output: str) -> Tuple[str, Dict[str, Any]]:
-        """Generate detailed feedback about why tests failed"""
+        """
+        Generate detailed feedback for a test failure
+        
+        Args:
+            prompt: The problem statement
+            declaration: The function declaration
+            implementation: The implementation
+            tests: The test code
+            test_output: The test output
+            
+        Returns:
+            Tuple containing feedback and details
+        """
         start_time = time.time()
+        combined_code = declaration + "\n" + implementation
         
-        # First do some basic analysis of the test failures
-        self._log(f"\nANALYZING TEST FAILURES:", "cyan", attrs=["bold"])
-        
-        # Extract failing tests
-        failing_tests = re.findall(r'test (.*?) \.\.\. FAILED', test_output)
-        if failing_tests:
-            self._log(f"Detected {len(failing_tests)} failing tests:")
-            for test in failing_tests:
-                self._log(f"  - {test}")
-                
-            # Try to extract failure messages
-            failure_details = re.findall(r'thread .* panicked at (.*?)(,|\n)', test_output)
-            if failure_details:
-                self._log("Failure messages:")
-                for detail in failure_details:
-                    self._log(f"  - {detail[0]}")
-        
+        # Create the feedback prompt
         feedback_prompt = f"""
-As a Rust expert, analyze why these tests are failing for the given problem:
+You need to analyze a Rust function implementation and test failures to provide detailed feedback.
 
-Problem description:
+PROBLEM STATEMENT:
 {prompt}
 
-Implementation:
+IMPLEMENTATION:
 ```rust
-{declaration}
-
-{implementation}
+{combined_code}
 ```
 
-Test code:
+TEST CODE:
 ```rust
 {tests}
 ```
 
-Test output (showing failures):
+TEST OUTPUT:
 ```
 {test_output}
 ```
 
-Please provide a detailed analysis of the problems in the implementation:
-1. Identify which test cases are failing and why they're failing (expected vs. actual behavior)
-2. Point out the specific parts of the code that have logical errors
-3. Explain clearly how the code should be fixed
-4. For each bug, describe both the cause and the solution
-
-Your feedback should be specific and focus on fixing the implementation, not the tests.
+Based on the test failures, provide a detailed analysis of what's wrong with the implementation and why it fails the tests.
+Explain what needs to be fixed to make the implementation pass all tests.
+Be very specific about what's wrong with the implementation. Don't just say it fails the tests; explain WHY it fails.
 """
-        feedback = self.model.generate_code(feedback_prompt, system_prompt=self.system_prompt, n=1)[0]
+        
+        # Generate feedback
+        feedback = self.model.generate_code(feedback_prompt, system_prompt=self.system_prompt if not self._disable_system_prompts else "", n=1)[0]
         
         details = {
             "duration": time.time() - start_time,
-            "feedback": feedback,
-            "failing_tests": failing_tests
+            "prompt": feedback_prompt
         }
         
-        # Print a preview of the feedback
-        self._log(f"\nGENERATED FEEDBACK:", "cyan", attrs=["bold"])
-        self._log("-" * 40)
-        feedback_preview = feedback.split('\n')
-        if len(feedback_preview) > 10:
-            self._log('\n'.join(feedback_preview[:10] + ['...']))
-        else:
-            self._log(feedback)
-        self._log("-" * 40)
+        self._log(f"\nDETAILED FEEDBACK GENERATED:", "cyan", attrs=["bold"])
+        self._log(feedback, separate_section=True)
         
         return feedback, details
     

@@ -11,9 +11,16 @@ You are a Rust programming expert. Your task is to solve a Rust problem by imple
 Do NOT change the function signature. Do not add any imports that are not already present in the problem description.
 """
     
-    def __init__(self, model: CodeGenerationModel, verbose: bool = True):
+    def __init__(self, model: CodeGenerationModel, verbose: bool = True, disable_system_prompts: bool = False):
         self.model = model
         self._verbose = verbose
+        self._disable_system_prompts = disable_system_prompts
+        
+        # If system prompts are disabled, use empty string
+        self.system_prompt = "" if disable_system_prompts else self.system_prompt
+        
+        if verbose and disable_system_prompts:
+            print(termcolor.colored("System prompts disabled for CodeRefinementAgent", "yellow"))
 
     def _log(self, message: str, color: str = None, always: bool = False, attrs=None, separate_section: bool = False):
         """
@@ -51,7 +58,7 @@ Do NOT change the function signature. Do not add any imports that are not alread
         self._log(f"\nGENERATING INITIAL CODE...", "cyan", attrs=["bold"], separate_section=True)
         self._log(f"Using prompt of length {len(prompt)} characters", "cyan")
         
-        codes = self.model.generate_code(prompt, system_prompt=self.system_prompt, n=n)
+        codes = self.model.generate_code(prompt, system_prompt=self.system_prompt if not self._disable_system_prompts else "", n=n)
         
         for i, code in enumerate(codes):
             if n > 1:
@@ -93,7 +100,7 @@ If the code currently does not compile, you must fix all the compilation errors!
 """
         self._log(f"Created refinement prompt of length {len(refinement_prompt)} characters", "cyan")
         
-        refined_codes = self.model.generate_code(refinement_prompt, system_prompt=self.system_prompt, n=n)
+        refined_codes = self.model.generate_code(refinement_prompt, system_prompt=self.system_prompt if not self._disable_system_prompts else "", n=n)
         
         for i, refined_code in enumerate(refined_codes):
             if n > 1:
