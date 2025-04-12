@@ -233,15 +233,30 @@ Your task is to carefully review a Rust code implementation and provide feedback
         
         # First extract the function signature from the declaration
         signature_index = declaration.find("fn " + entry_point)
-        required_signature = declaration[signature_index:].replace(' ', '').strip()
+        if signature_index == -1:
+            # Try to find a function that starts with the entry point
+            for line in declaration.split('\n'):
+                if line.strip().startswith("fn ") and line.strip().split("fn ")[1].split("(")[0].strip().startswith(entry_point):
+                    signature_index = declaration.find(line.strip())
+                    break
+            if signature_index == -1:
+                return False
+                
+        required_signature = declaration[signature_index:].split('{')[0].strip()
 
         # Then extract the function signature from the implementation
-        implementation_signature = self.parser.get_function_signature(implementation, entry_point).replace(' ', '').strip()
+        # Try to find a function that starts with the entry point
+        implementation_signature = None
+        for line in implementation.split('\n'):
+            if line.strip().startswith("fn ") and line.strip().split("fn ")[1].split("(")[0].strip().startswith(entry_point):
+                implementation_signature = line.strip().split('{')[0].strip()
+                break
+                
+        if implementation_signature is None:
+            return False
 
-        print("required_signature: ", required_signature)
-        print("implementation_signature: ", implementation_signature)
-        # Compare the signatures
-        return required_signature == implementation_signature
+        # Compare the signatures, ignoring whitespace
+        return required_signature.replace(' ', '') == implementation_signature.replace(' ', '')
         
     
     def check_compilation(self, declaration: str, implementation: str) -> Tuple[bool, str, Dict[str, Any]]:
@@ -343,15 +358,13 @@ Strongly remind the user that their solution must only use allowed imports and t
         self._log(combined_code, separate_section=True)
         
         test_prompt = f"""
-You are trying to write unit tests to ensure that a solution to the following Rust problem is correct:
+Read the problem description carefully and write unit tests to ensure that a solution to the following Rust problem is correct:
 Problem:
 {prompt}
-
-Read the problem description carefully and write the unit tests to ensure that the solutions solve the problem described.
 """
         if implementation_visible:
             test_prompt += f"""
-This is the solution you will be testing:
+This is the solution:
 
 ```rust
 {combined_code}
@@ -364,9 +377,9 @@ This is the solution you will be testing:
         test_prompt += f"""
 Format your response as a complete Rust test module wrapped with #[cfg(test)] that can be directly appended to the code.
 Only write the tests, not the implementation code. Make sure the tests will run with 'cargo test'.
-Assume that the function will be called with the inputs described in the problem description.
-Include useful test cases that would verify the function works correctly for various inputs.
-Do not include any explanations, comments, or markdown formatting in your response - only pure Rust code.
+Assume that the function will be called with valid inputs described in the problem description: don't write edge cases.
+Write up to 5 unit tests that would be enough to verify the function works correctly.
+Do not add long test cases that iterate over a range of values, instead focus on testing the function with specific values.
 """
         raw_test_code = self.model.generate_code(test_prompt, system_prompt=self.system_prompt, n=1)[0]
         
