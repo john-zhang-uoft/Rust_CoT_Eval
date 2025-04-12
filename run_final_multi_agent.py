@@ -52,6 +52,7 @@ def process_sample(args, sample_with_idx, is_verbose=False):
             low_confidence_threshold=args.low_confidence_threshold,
             disable_plan_restart=args.disable_plan_restart,
             disable_system_prompts=args.disable_system_prompts,
+            no_planner=args.no_planner,
             verbose=is_verbose
         )
         
@@ -247,6 +248,8 @@ if __name__ == "__main__":
                         help="Disable restarting from plan when confidence is low")
     parser.add_argument("--disable_system_prompts", action="store_true",
                         help="Disable all system prompts for the models")
+    parser.add_argument("--no_planner", action="store_true",
+                        help="Skip the planning phase entirely and go straight to coding")
                         
     args = parser.parse_args()
     

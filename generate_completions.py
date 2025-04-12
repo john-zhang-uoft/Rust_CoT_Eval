@@ -83,6 +83,7 @@ def get_prompt_base(doc, language):
 
 def get_prompt_synthesize(doc, language="python"):
     # addon = f"Start your code with:\n{get_prompt_base(sample, language)}"
+    # addon = f"Do not include the ` character. Think step by step to understand the problem and plan the solution and then write your code.Start your code with:\n{get_prompt_base(doc, language)}"
     addon = f"Do not include the ` character. Start your code with:\n{get_prompt_base(doc, language)}"
     return doc["instruction"] + "\n" + addon # Results in worse performance for GPT4
 

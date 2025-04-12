@@ -71,6 +71,7 @@ class ConfidenceMultiAgentModel:
         tester_knows_cases: bool = False,
         disable_plan_restart: bool = False,
         disable_system_prompts: bool = False,
+        no_planner: bool = False,
         verbose: bool = False
     ):
         """
@@ -88,6 +89,7 @@ class ConfidenceMultiAgentModel:
             tester_knows_cases: Whether to use the test cases from the dataset
             disable_plan_restart: Whether to disable restarting from plan when confidence is low
             disable_system_prompts: Whether to disable all system prompts
+            no_planner: Whether to skip the planning phase entirely
             verbose: Whether to print detailed logs
         """
         self.language = language
@@ -99,6 +101,7 @@ class ConfidenceMultiAgentModel:
         self.tester_knows_cases = tester_knows_cases
         self.disable_plan_restart = disable_plan_restart
         self.disable_system_prompts = disable_system_prompts
+        self.no_planner = no_planner
         self.verbose = verbose
         
         # Initialize agents
@@ -118,6 +121,8 @@ class ConfidenceMultiAgentModel:
         self._log(f"Initialized confidence multi-agent model with {language} language")
         self._log(f"Confidence threshold: {confidence_threshold}, Low confidence threshold: {low_confidence_threshold}")
         self._log(f"Disable plan restart: {disable_plan_restart}, Disable system prompts: {disable_system_prompts}")
+        if no_planner:
+            self._log(f"Planning phase disabled, starting directly with coding", "yellow")
     
     def _log(self, message: str, color: str = None, always: bool = False):
         """
@@ -167,41 +172,340 @@ class ConfidenceMultiAgentModel:
         code_that_compiles = ""
         
         planner_confidence, coder_confidence, tester_confidence = -1, -1, -1
-        # Phase 1: Planning
-        while planning_attempts < self.max_planning_attempts:
-            self._log(f"\n{'='*80}\nPHASE 1: PLANNING (Attempt {planning_attempts+1}/{self.max_planning_attempts})\n{'='*80}", "blue", always=True)
-            
-            # Get plan from planner agent - use refine_plan if not first attempt
-            if planning_attempts == 0:
-                plan_data = self.planner.create_plan(prompt, declaration, entry_point)
-            else:
-                # Get feedback from the latest iteration
-                latest_iteration = iterations_data[-1] if iterations_data else None
-                feedback = latest_iteration.get("feedback", "") if latest_iteration else ""
-                self._log(f"Using feedback from latest iteration to refine plan: {feedback}", "cyan")
-                plan_data = self.planner.refine_plan(prompt, declaration, entry_point, feedback)
-            
-            # Check planner confidence
-            planner_system_prompt = self.planner.system_prompt
-            planner_response = json.dumps(plan_data, indent=2)
-            planner_confidence, planner_explanation = self.confidence_checker.check_confidence(
-                planner_system_prompt, 
-                planner_response, 
-                prompt
-            )
-            self._log(f"Planner confidence: {planner_confidence}/100", "cyan")
-            self._log(f"Planner explanation: {planner_explanation}", "cyan")
-            
-            # Phase 2: Initial coding
-            self._log(f"\n{'='*80}\nPHASE 2: INITIAL CODING\n{'='*80}", "blue", always=True)
-            
-            # Generate initial code based on the plan
-            coding_prompt = f"""
+        plan_data = {"pseudocode": ""}
+        
+        # Phase 1: Planning (unless no_planner is True)
+        if not self.no_planner:
+            while planning_attempts < self.max_planning_attempts:
+                self._log(f"\n{'='*80}\nPHASE 1: PLANNING (Attempt {planning_attempts+1}/{self.max_planning_attempts})\n{'='*80}", "blue", always=True)
+                
+                # Get plan from planner agent - use refine_plan if not first attempt
+                if planning_attempts == 0:
+                    plan_data = self.planner.create_plan(prompt, declaration, entry_point)
+                else:
+                    # Get feedback from the latest iteration
+                    latest_iteration = iterations_data[-1] if iterations_data else None
+                    feedback = latest_iteration.get("feedback", "") if latest_iteration else ""
+                    self._log(f"Using feedback from latest iteration to refine plan: {feedback}", "cyan")
+                    plan_data = self.planner.refine_plan(prompt, declaration, entry_point, feedback)
+                
+                # Check planner confidence
+                planner_system_prompt = self.planner.system_prompt
+                planner_response = json.dumps(plan_data, indent=2)
+                planner_confidence, planner_explanation = self.confidence_checker.check_confidence(
+                    planner_system_prompt, 
+                    planner_response, 
+                    prompt
+                )
+                self._log(f"Planner confidence: {planner_confidence}/100", "cyan")
+                self._log(f"Planner explanation: {planner_explanation}", "cyan")
+                
+                # Phase 2: Initial coding
+                self._log(f"\n{'='*80}\nPHASE 2: INITIAL CODING\n{'='*80}", "blue", always=True)
+                
+                # Generate initial code based on the plan
+                coding_prompt = f"""
 You are implementing a solution for the following problem:
 {prompt}
 
 Here is a plan to solve this problem:
 {plan_data['pseudocode']}
+
+Implement the solution in Rust according to this function signature:
+{declaration}
+"""
+                
+                initial_coder_output = self.coder.generate_code(coding_prompt)[0]
+                
+                # Check coder confidence
+                coder_system_prompt = self.coder.system_prompt
+                coder_confidence, coder_explanation = self.confidence_checker.check_confidence(
+                    coder_system_prompt,
+                    initial_coder_output,
+                    coding_prompt
+                )
+                
+                self._log(f"Coder confidence: {coder_confidence}/100", "cyan")
+                self._log(f"Coder explanation: {coder_explanation}", "cyan")
+                
+                current_coder_output = initial_coder_output
+
+                compilation_black_board = ""
+                testing_blackboard = {}
+
+                original_declaration = declaration
+
+                if self.keep_generated_function_signature:
+                    # When we want to keep function signatures from the implementation
+                    self._log("Using implementation with its own function signatures instead of replacing it.", "cyan")
+                    # Remove the function signature from the declaration
+                    declaration = declaration.split("fn " + entry_point)[0]
+
+                # Phase 3: Iterative refinement
+                while iterations < self.max_iterations:
+                    self._log(f"\n{'='*80}\nPHASE 3: ITERATION {iterations+1}/{self.max_iterations}\n{'='*80}", "blue", always=True)
+                    
+                    current_extracted_code = self.tester.parse_code(current_coder_output, prompt, entry_point)
+
+                    if self.keep_generated_function_signature:
+                        # When we want to keep function signatures from the implementation
+                        full_code = current_extracted_code
+
+                        self._log(f"\nSTEP 0: CHECKING SIGNATURE MATCHES...", "cyan")
+                        signature_matches = self.tester.check_signature_matches(original_declaration, full_code, entry_point)
+                        if not signature_matches:
+                            self._log("Signature does not match. Refining code...", "yellow")
+                            # Refine the code
+                            fixed_output = self.coder.refine_code(prompt, full_code, "The function signature does not match the signature in the problem statement. Please fix it.")[0]
+                            full_code = self.tester.parse_code(fixed_output, prompt, entry_point)
+                    else:
+                        # Normal case: combine declaration and implementation
+                        self._log("Using declaration + implementation", "cyan")
+                        full_code = f"{declaration}\n{current_extracted_code}"
+
+                    # Step 1: Check if the code compiles
+                    self._log(f"\nSTEP 1: CHECKING COMPILATION...", "cyan")
+                    compiles, compile_feedback, compile_details = self.tester.check_compilation(declaration, full_code)
+                    compilation_black_board += "Code:\n\n" + full_code + "\n\nCompilation feedback:\n\n" + compile_feedback
+                    if not compiles:
+                        self._log(f"Compilation failed: {compile_feedback}", "red")
+                        
+                        # Store iteration data
+                        iteration_data = {
+                            "iteration": iterations,
+                            "code": full_code,
+                            "feedback": compile_feedback,
+                            "success": False,
+                            "compilation": compile_details,
+                            "confidence": {
+                                "planner": planner_confidence,
+                                "coder": coder_confidence,
+                                "tester": 0  # No tester confidence if compilation fails
+                            }
+                        }
+                        iterations_data.append(iteration_data)
+                        
+                        # Refine the code
+                        if iterations < self.max_iterations - 1:
+                            self._log(f"\nRefining code after compilation error...", "cyan")
+                            refined_code = self.coder.refine_code(prompt, full_code, compile_feedback)[0]
+                            
+                            # Check coder confidence in refined code
+                            refinement_prompt = f"Refine code based on compilation feedback: {compilation_black_board}"
+                            coder_confidence, coder_explanation = self.confidence_checker.check_confidence(
+                                coder_system_prompt,
+                                refined_code,
+                                refinement_prompt
+                            )
+                            
+                            self._log(f"Coder confidence in refined code: {coder_confidence}/100", "cyan")
+                            self._log(f"Coder explanation: {coder_explanation}", "cyan")
+                            
+                            current_coder_output = refined_code
+                            iterations += 1
+                            continue
+                        else:
+                            success = False
+                            exit_reason = "compilation_failed"
+                            full_code = code_that_compiles
+                            break
+                    
+                    code_that_compiles = full_code
+                    # Step 2: Generate tests
+                    self._log(f"\nSTEP 2: GENERATING TESTS...", "cyan")
+                    
+                    if self.tester_knows_cases and test_code:
+                        # Use the prebuilt test cases if the flag is enabled and test_code is provided
+                        self._log(f"Using prebuilt test cases from the dataset", "cyan")
+                        tests_generated = True
+                        test_gen_details = {"source": "dataset"}
+                        # Set tester confidence high when using dataset tests
+                        tester_confidence = 100
+                        tester_explanation = "Using provided test cases from the dataset"
+                        # Initialize variables that would normally be set during test generation/refinement
+                        test_quality_feedback = "Using dataset test cases"
+                        refined_test_details = {"source": "dataset"}
+                    else:
+                        # Check if coder has low confidence
+                        test_quality_feedback = ""
+                        refined_test_details = {}
+                        refined_tests = ""
+                        low_confidence_message = ""
+                        if coder_confidence < self.low_confidence_threshold:
+                            low_confidence_message = "I'm not really sure if this solution is correct..."
+                            self._log(f"Adding low confidence message to test generator: {low_confidence_message}", "yellow")
+                        
+                        if "current_tests" not in testing_blackboard:
+                            tests_generated, test_code, test_gen_details = self.tester.generate_tests(
+                                prompt, declaration, full_code, entry_point, extra_instructions=low_confidence_message
+                            )
+                            if not tests_generated:
+                                self._log(f"Could not generate tests: {test_code}", "red")
+                                
+                                # Store iteration data
+                                iteration_data = {
+                                    "iteration": iterations,
+                                    "code": full_code,
+                                    "feedback": f"Test generation failed: {test_code}",
+                                    "success": False,
+                                    "compilation": compile_details,
+                                    "test_generation": test_gen_details,
+                                    "confidence": {
+                                        "planner": planner_confidence,
+                                        "coder": coder_confidence,
+                                        "tester": 0  # No tester confidence if test generation fails
+                                    }
+                                }
+                                iterations_data.append(iteration_data)
+                                
+                                # Exit with failure
+                                success = False
+                                exit_reason = "test_generation_failed"
+                                break
+                        else:
+                            test_code = testing_blackboard["current_tests"]
+                            
+                        # Either we have tests from a previous iteration or we just generated them
+                        # Check tester confidence in the test code
+                        tester_system_prompt = self.tester.system_prompt
+                        tester_confidence, tester_explanation = self.confidence_checker.check_confidence(
+                            tester_system_prompt,
+                            test_code,
+                            "Write tests for the following code:\n" + full_code,
+                            "" if "test_feedback" not in testing_blackboard else testing_blackboard["test_feedback"]
+                        )
+                        self._log(f"Tester confidence in tests: {tester_confidence}/100", "cyan")
+                        self._log(f"Tester explanation of confidence: {tester_explanation}", "cyan")
+                        # Check if tester has low confidence
+                        if tester_confidence < self.low_confidence_threshold:
+                            # Step 3: Check test quality (Skip this step if using prebuilt tests)
+                            self._log(f"\nSTEP 3: CHECKING TEST QUALITY...", "cyan")
+                            test_low_confidence_message = "I'm not really sure if these tests are correct..."
+                            self._log(f"Adding low confidence message to test checker: {test_low_confidence_message}", "yellow")
+                            self._log("Checking and refining tests...", "cyan")
+                            test_quality_feedback = self.test_checker.check_tests(
+                                prompt, declaration, full_code, test_code, entry_point, extra_instructions=test_low_confidence_message
+                            )
+                        
+                            self._log(f"Test quality feedback: {test_quality_feedback}", "cyan")
+                            
+                            # Step 4: Refine tests based on feedback
+                            self._log(f"\nSTEP 4: REFINING TESTS...", "cyan")
+                            extra_instructions = f"""
+    Based on the review, improve your tests to better match the requirements.
+    Feedback on your tests:
+    {test_quality_feedback}
+    """
+                            tests_refined, refined_test_code, refined_test_details = self.tester.generate_tests(
+                                prompt, declaration, full_code, entry_point, extra_instructions=extra_instructions
+                            )      
+                            if not tests_refined:
+                                self._log(f"Could not refine tests: {refined_test_code}", "red")
+                                self._log(f"Falling back to original tests", "yellow")
+                            else:
+                                test_code = refined_test_code
+                
+                    # Step 5: Run tests
+                    self._log(f"\nSTEP 5: RUNNING TESTS...", "cyan")
+                    tests_pass, test_output, test_details = self.tester.run_tests(
+                        declaration, full_code, test_code, entry_point
+                    )
+                    # Store overall feedback
+                    if tests_pass:
+                        feedback = "Code looks good. All tests passed."
+                    else:
+                        # Generate detailed feedback for test failures
+                        detailed_test_feedback, analysis_details = self.tester.generate_detailed_feedback(
+                            prompt, declaration, full_code, test_code, test_output
+                        )
+                        feedback = detailed_test_feedback
+                        test_details["analysis"] = analysis_details
+
+                    testing_blackboard["test_feedback"] = feedback
+                    testing_blackboard["current_tests"] = test_code
+
+                    # Store iteration data
+                    iteration_data = {
+                        "iteration": iterations,
+                        "code": full_code,
+                        "feedback": feedback,
+                        "success": tests_pass,
+                        "compilation": compile_details,
+                        "test_generation": test_gen_details,
+                        "test_quality_feedback": test_quality_feedback,
+                        "refined_tests": refined_test_details,
+                        "test_execution": test_details,
+                        "confidence": {
+                            "planner": planner_confidence,
+                            "coder": coder_confidence,
+                            "tester": tester_confidence
+                        }
+                    }
+                    iterations_data.append(iteration_data)
+                    
+                    # Exit early if tests pass
+                    if tests_pass:
+                        self._log(f"Tests passed! Exiting early.", "green", always=True)
+                        success = True
+                        exit_reason = "tests_passed"
+                        break
+                    
+                    # Exit if low confidence across all agents
+                    agents_confidence = {
+                        "planner": planner_confidence,
+                        "coder": coder_confidence,
+                        "tester": tester_confidence
+                    }
+                    
+                    # If all agents have low confidence and plan restart is not disabled, try restarting with new plan
+                    restart_needed = False
+                    if not self.disable_plan_restart:
+                        restart_needed = self.planner.evaluate_confidence(agents_confidence)
+                    
+                    if restart_needed:
+                        self._log(f"Low confidence detected across agents. Restarting planning...", "yellow", always=True)
+                        planning_attempts += 1
+                        break
+                    
+                    # Otherwise refine the code
+                    if iterations < self.max_iterations - 2:
+                        self._log(f"\nRefining code based on test failures...", "cyan")
+                        refined_code = self.coder.refine_code(
+                            prompt, full_code, feedback
+                        )[0]
+                        
+                        # Check coder confidence in refined code
+                        refinement_prompt = f"Refine code based on feedback: {feedback}"
+                        coder_confidence, coder_explanation = self.confidence_checker.check_confidence(
+                            coder_system_prompt,
+                            refined_code,
+                            refinement_prompt
+                        )
+                        
+                        self._log(f"Coder confidence in refined code: {coder_confidence}/100", "cyan")
+                        self._log(f"Coder explanation: {coder_explanation}", "cyan")
+                        
+                        current_coder_output = refined_code
+                    
+                    iterations += 1
+                
+                # If we've succeeded or exhausted iterations, exit the planning loop
+                if success or iterations >= self.max_iterations:
+                    break
+                
+                planning_attempts += 1
+        else:
+            # Skip planning when no_planner is True
+            self._log(f"\n{'='*80}\nPHASE 1: PLANNING SKIPPED (no_planner=True)\n{'='*80}", "blue", always=True)
+            planner_confidence = 100  # Assume high confidence
+            
+            # Phase 2: Initial coding without plan
+            self._log(f"\n{'='*80}\nPHASE 2: INITIAL CODING\n{'='*80}", "blue", always=True)
+            
+            # Direct coding without plan
+            coding_prompt = f"""
+You are implementing a solution for the following problem:
+{prompt}
 
 Implement the solution in Rust according to this function signature:
 {declaration}
@@ -481,11 +785,8 @@ Implement the solution in Rust according to this function signature:
                 
                 iterations += 1
             
-            # If we've succeeded or exhausted iterations, exit the planning loop
-            if success or iterations >= self.max_iterations:
-                break
-            
-            planning_attempts += 1
+            # When plan-based iteration completes, either from success or max iterations
+            # No need for break here since we're not in a loop
         
         # Store final confidence scores
         final_confidence = {
@@ -534,6 +835,7 @@ def create_confidence_multi_agent_model(
     tester_knows_cases: bool = False,
     disable_plan_restart: bool = False,
     disable_system_prompts: bool = False,
+    no_planner: bool = False,
     verbose: bool = False
 ) -> ConfidenceMultiAgentModel:
     """
@@ -556,6 +858,7 @@ def create_confidence_multi_agent_model(
         tester_knows_cases: Whether to use the test cases from the dataset
         disable_plan_restart: Whether to disable restarting from plan when confidence is low
         disable_system_prompts: Whether to disable all system prompts
+        no_planner: Whether to skip the planning phase entirely
         verbose: Whether to print detailed logs
         
     Returns:
@@ -580,6 +883,7 @@ def create_confidence_multi_agent_model(
         tester_knows_cases=tester_knows_cases,
         disable_plan_restart=disable_plan_restart,
         disable_system_prompts=disable_system_prompts,
+        no_planner=no_planner,
         verbose=verbose
     )
     
@@ -635,6 +939,8 @@ if __name__ == "__main__":
                         help="Disable all system prompts for the models")
     parser.add_argument("--verbose", action="store_true",
                         help="Print detailed logs")
+    parser.add_argument("--no_planner", action="store_true",
+                        help="Skip the planning phase entirely")
                         
     args = parser.parse_args()
     
@@ -682,6 +988,7 @@ if __name__ == "__main__":
         low_confidence_threshold=args.low_confidence_threshold,
         disable_plan_restart=args.disable_plan_restart,
         disable_system_prompts=args.disable_system_prompts,
+        no_planner=args.no_planner,
         verbose=args.verbose
     )
     
